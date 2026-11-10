@@ -9,6 +9,6 @@ schema:
     name:
       type: string
       description: ''
-      default: World
+      default: there
       originalType: string
   required: []

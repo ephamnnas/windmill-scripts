@@ -1,0 +1,67 @@
+summary: ''
+description: ''
+lock: '!inline u/knguyen/invite-nb-pilot.script.lock'
+kind: script
+schema:
+  $schema: https://json-schema.org/draft/2020-12/schema
+  type: object
+  properties:
+    apply_nb_pilot_label:
+      type: boolean
+      description: ''
+      default: true
+    email:
+      type: string
+      description: ''
+      default: null
+      originalType: string
+    first_name:
+      type: string
+      description: ''
+      default: null
+      originalType: string
+    last_name:
+      type: string
+      description: ''
+      default: null
+      originalType: string
+    regulator:
+      type: string
+      description: ''
+      default: null
+      enum:
+        - RN
+        - LPN
+      originalType: enum
+    regulatory_body:
+      type: string
+      description: ''
+      default: null
+      enum:
+        - Association Of New Brunswick Licensed Practical Nurses
+        - College Of Licensed Practical Nurses Of British Columbia
+        - College Of Licensed Practical Nurses Of Manitoba
+        - College Of Nurses Of Ontario
+        - College Of Registered Nurses Of British Columbia
+        - College Of Registered Nurses Of Manitoba
+        - College Of Registered Nurses Of Prince Edward Island
+        - College of Licensed Practical Nurses and Health Care Aides of Alberta
+        - College of Licensed Practical Nurses of Prince Edward Island
+        - College of Licensed Practical Nurses of Saskatchewan
+        - College of Nursing of New Brunswick
+        - College of Registered Nurses Of Alberta
+        - College of Registered Nurses of Saskatchewan
+        - Newfoundland and Labrador College of Nurses
+        - Nova Scotia College of Nursing-LPN
+        - Nova Scotia College of Nursing-RN
+      originalType: enum
+    send_invite:
+      type: boolean
+      description: ''
+      default: true
+  required:
+    - email
+    - first_name
+    - last_name
+    - regulator
+    - regulatory_body

@@ -1,0 +1,33 @@
+summary: ''
+description: ''
+lock: '!inline u/epham2/applicant-docs-tm-test.script.lock'
+kind: script
+schema:
+  $schema: https://json-schema.org/draft/2020-12/schema
+  type: object
+  properties:
+    ADDITIONAL_CONTENT:
+      type: string
+      description: ''
+      default: null
+      originalType: string
+    APPLICATION_ID:
+      type: string
+      description: ''
+      default: null
+      originalType: string
+    REFERENCE_ID:
+      type: string
+      description: ''
+      default: null
+      originalType: string
+    USER:
+      type: string
+      description: ''
+      default: null
+      originalType: string
+  required:
+    - APPLICATION_ID
+    - REFERENCE_ID
+    - USER
+    - ADDITIONAL_CONTENT

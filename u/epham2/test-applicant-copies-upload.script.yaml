@@ -1,0 +1,29 @@
+summary: ''
+description: ''
+lock: '!inline u/epham2/test-applicant-copies-upload.script.lock'
+kind: script
+schema:
+  $schema: https://json-schema.org/draft/2020-12/schema
+  type: object
+  properties:
+    application_id:
+      type: integer
+      description: ''
+      default: null
+    file_path:
+      type: string
+      description: ''
+      default: null
+      originalType: string
+    mark_complete:
+      type: boolean
+      description: ''
+      default: false
+    task_id:
+      type: integer
+      description: ''
+      default: null
+  required:
+    - file_path
+    - application_id
+    - task_id

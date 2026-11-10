@@ -1,0 +1,31 @@
+summary: ''
+description: ''
+value:
+  modules:
+    - id: testScript
+      value:
+        type: script
+        input_transforms: {}
+        is_trigger: false
+        path: u/epham2/test-script
+  failure_module:
+    id: failure
+    value:
+      type: script
+      input_transforms:
+        error:
+          type: javascript
+          value: null
+          expr: results.testScript.error
+        ms_teams_webhook:
+          type: static
+          value: $res:u/epham2/ms_teams_webhook
+        schedule_path:
+          type: static
+          value: ''
+      is_trigger: false
+      path: u/epham2/error-handler-script
+  groups: []
+schema:
+  order: []
+  properties: {}

@@ -1,0 +1,29 @@
+summary: ''
+description: ''
+lock: '!inline u/epham2/apps-without-applicant-copies.script.lock'
+kind: script
+schema:
+  $schema: https://json-schema.org/draft/2020-12/schema
+  type: object
+  properties:
+    inspect_appid:
+      type: integer
+      description: ''
+      default: null
+    program_id:
+      type: integer
+      description: ''
+      default: null
+    stage_name:
+      type: string
+      description: ''
+      default: null
+      originalType: string
+    task_id:
+      type: integer
+      description: ''
+      default: null
+  required:
+    - program_id
+    - stage_name
+    - task_id

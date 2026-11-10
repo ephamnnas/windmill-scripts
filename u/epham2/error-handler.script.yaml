@@ -1,0 +1,26 @@
+summary: ''
+description: ''
+lock: '!inline u/epham2/error-handler.script.lock'
+kind: failure
+schema:
+  $schema: https://json-schema.org/draft/2020-12/schema
+  type: object
+  properties:
+    error:
+      type: object
+      description: ''
+      default: null
+      properties: {}
+    ms_teams_webhook:
+      type: object
+      description: ''
+      default: null
+      properties: {}
+    schedule_path:
+      type: string
+      description: ''
+      default: ''
+      originalType: string
+  required:
+    - error
+    - ms_teams_webhook

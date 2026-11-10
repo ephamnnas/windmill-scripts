@@ -1,0 +1,40 @@
+summary: ''
+description: ''
+value:
+  modules:
+    - id: a
+      summary: ''
+      value:
+        type: script
+        input_transforms:
+          id:
+            type: javascript
+            expr: flow_input.id
+          type:
+            type: javascript
+            expr: flow_input.type
+          event_id:
+            type: javascript
+            expr: flow_input.event_id
+        is_trigger: false
+        path: u/epham2/translation_paid
+  groups: []
+schema:
+  order:
+    - id
+    - type
+    - event_id
+  properties:
+    id:
+      type: string
+      description: ''
+      default: ''
+    type:
+      type: string
+      description: ''
+      default: ''
+    event_id:
+      type: string
+      description: ''
+      default: ''
+  required: []

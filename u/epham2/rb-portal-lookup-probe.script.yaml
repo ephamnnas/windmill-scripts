@@ -1,0 +1,15 @@
+summary: ''
+description: ''
+lock: '!inline u/epham2/rb-portal-lookup-probe.script.lock'
+kind: script
+schema:
+  $schema: https://json-schema.org/draft/2020-12/schema
+  type: object
+  properties:
+    application_id:
+      type: string
+      description: ''
+      default: null
+      originalType: string
+  required:
+    - application_id

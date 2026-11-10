@@ -1,0 +1,17 @@
+summary: ''
+description: ''
+lock: '!inline u/knguyen/TM-SFTP-Daily-Mirror.script.lock'
+kind: script
+schema:
+  $schema: https://json-schema.org/draft/2020-12/schema
+  type: object
+  properties:
+    days_back:
+      type: integer
+      description: ''
+      default: null
+    dry_run:
+      type: boolean
+      description: ''
+      default: false
+  required: []

@@ -1,0 +1,26 @@
+summary: ''
+description: ''
+lock: '!inline u/epham2/regenerate-application-form.script.lock'
+kind: script
+schema:
+  $schema: https://json-schema.org/draft/2020-12/schema
+  type: object
+  properties:
+    dry_run:
+      type: boolean
+      description: ''
+      default: true
+    move_superseded:
+      type: boolean
+      description: ''
+      default: false
+    only:
+      type: string
+      description: ''
+      default: ''
+      originalType: string
+    upload_on_mismatch:
+      type: boolean
+      description: ''
+      default: false
+  required: []

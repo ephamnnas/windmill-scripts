@@ -1,0 +1,28 @@
+summary: finalize and push to sftp
+description: This script was edited in place of flow u/knguyen/dignified_flow  by knguyen.
+lock: '!inline u/knguyen/finalize-and-push-to-sftp-TM/a.script.lock'
+kind: script
+schema:
+  $schema: https://json-schema.org/draft/2020-12/schema
+  type: object
+  properties:
+    additional_content:
+      type: string
+      description: ''
+      default: null
+      originalType: string
+    dry_run:
+      type: boolean
+      description: ''
+      default: false
+    reference_id:
+      type: string
+      description: ''
+      default: null
+      originalType: string
+    user_id:
+      type: object
+      description: ''
+      default: null
+      format: resource-Any
+  required: []

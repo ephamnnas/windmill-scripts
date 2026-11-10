@@ -1,0 +1,62 @@
+summary: ''
+description: ''
+lock: '!inline u/knguyen/api-analysis.script.lock'
+kind: script
+schema:
+  $schema: https://json-schema.org/draft/2020-12/schema
+  type: object
+  properties:
+    anon_salt:
+      type: string
+      description: ''
+      default: nnas-volume-report
+      originalType: string
+    anonymize:
+      type: boolean
+      description: ''
+      default: true
+    applicant_filter:
+      type: string
+      description: ''
+      default: ''
+      originalType: string
+    compare_programs:
+      type: array
+      description: ''
+      default:
+        - 295185
+        - 295865
+      items:
+        type: number
+      originalType: number[]
+    created_since:
+      type: string
+      description: ''
+      default: 2026-06-01
+      originalType: string
+    eligibility_scope:
+      type: string
+      description: ''
+      default: applicants
+      originalType: string
+    match_all_programs:
+      type: boolean
+      description: ''
+      default: true
+    max_workers:
+      type: integer
+      description: ''
+      default: 8
+    pull_eligibility:
+      type: boolean
+      description: ''
+      default: true
+    upload_to_sharepoint:
+      type: boolean
+      description: ''
+      default: true
+    user_limit:
+      type: integer
+      description: ''
+      default: 0
+  required: []

@@ -1,0 +1,34 @@
+summary: ''
+description: ''
+lock: '!inline u/epham2/review-reassignment-tm.script.lock'
+kind: script
+schema:
+  $schema: https://json-schema.org/draft/2020-12/schema
+  type: object
+  properties:
+    ADDITIONAL_CONTENT:
+      type: ''
+      description: ''
+      default: null
+    appid:
+      type: ''
+      description: ''
+      default: null
+    REFERENCE_ID:
+      type: ''
+      description: ''
+      default: null
+    USER:
+      type: ''
+      description: ''
+      default: null
+    USER_ID:
+      type: ''
+      description: ''
+      default: null
+  required:
+    - REFERENCE_ID
+    - USER_ID
+    - USER
+    - appid
+    - ADDITIONAL_CONTENT

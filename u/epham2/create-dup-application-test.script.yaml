@@ -1,0 +1,18 @@
+summary: ''
+description: ''
+lock: '!inline u/epham2/create-dup-application-test.script.lock'
+kind: script
+schema:
+  $schema: https://json-schema.org/draft/2020-12/schema
+  type: object
+  properties:
+    dry_run:
+      type: boolean
+      description: ''
+      default: true
+    source_id:
+      type: integer
+      description: ''
+      default: null
+  required:
+    - source_id

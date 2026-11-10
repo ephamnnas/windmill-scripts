@@ -1,0 +1,60 @@
+summary: ''
+description: ''
+value:
+  modules:
+    - id: a
+      summary: ''
+      value:
+        type: script
+        input_transforms:
+          dry_run:
+            type: static
+            value: false
+          require_request:
+            type: static
+            value: true
+          source_id:
+            type: javascript
+            expr: flow_input.id
+        is_trigger: false
+        path: u/epham2/create-additional-order
+  groups: []
+schema:
+  order:
+    - id
+    - user
+    - award
+    - round
+    - title
+    - token
+    - status
+    - user_id
+    - last_edited
+    - date_created
+    - reference_id
+    - additional_content
+  properties:
+    id:
+      type: integer
+    additional_content:
+      type: string
+    award:
+      type: integer
+    date_created:
+      type: string
+    last_edited:
+      type: string
+    reference_id:
+      type: string
+    round:
+      type: integer
+    status:
+      type: integer
+    title:
+      type: string
+    token:
+      type: string
+    user:
+      type: string
+    user_id:
+      type: integer

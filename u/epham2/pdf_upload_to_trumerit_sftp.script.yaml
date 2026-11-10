@@ -1,0 +1,33 @@
+summary: ''
+description: ''
+lock: '!inline u/epham2/pdf_upload_to_trumerit_sftp.script.lock'
+kind: script
+schema:
+  $schema: https://json-schema.org/draft/2020-12/schema
+  type: object
+  properties:
+    additional_content:
+      type: string
+      description: ''
+      default: ''
+      originalType: string
+    reference_id:
+      type: string
+      description: ''
+      default: ''
+      originalType: string
+    trigger:
+      type: object
+      description: ''
+      default: null
+      properties: {}
+    user:
+      type: string
+      description: ''
+      default: ''
+      originalType: string
+    user_id:
+      type: integer
+      description: ''
+      default: null
+  required: []

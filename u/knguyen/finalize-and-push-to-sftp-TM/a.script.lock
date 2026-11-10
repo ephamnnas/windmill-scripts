@@ -1,0 +1,36 @@
+# workspace-dependencies-mode: manual
+# py: 3.12
+anyio==4.15.1
+bcrypt==5.0.0
+certifi==2026.10.23
+cffi==2.1.1
+charset-normalizer==3.5.2
+cryptography==50.0.2
+flatbuffers==25.12.19
+h11==0.16.0
+httpcore==1.0.9
+httpx==0.28.1
+idna==3.20
+invoke==3.0.3
+networkx==3.7
+numpy==2.5.4
+onnxruntime==1.31.1
+packaging==26.3
+paramiko==5.1.0
+pdfminer-six==20260107
+pdfplumber==0.11.10
+pillow==13.0.0
+protobuf==7.36.2
+psutil==7.2.2
+pycparser==3.12
+pymupdf==2.0
+pymupdf-layout==2.0
+pymupdf4llm==2.0
+pynacl==1.6.2
+pypdfium2==5.14.0
+pyyaml==6.0.3
+requests==2.34.2
+tabulate==0.10.0
+typing-extensions==4.16.0
+urllib3==2.8.0
+wmill==1.854.2

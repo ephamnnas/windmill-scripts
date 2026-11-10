@@ -1,0 +1,36 @@
+summary: ''
+description: ''
+lock: '!inline u/epham2/nnas-application-form-audit.script.lock'
+kind: script
+schema:
+  $schema: https://json-schema.org/draft/2020-12/schema
+  type: object
+  properties:
+    app_ids:
+      type: array
+      description: ''
+      default: null
+      items:
+        type: string
+      originalType: string[]
+    check_all_regulators:
+      type: boolean
+      description: ''
+      default: false
+    max_apps:
+      type: integer
+      description: ''
+      default: 0
+    providers:
+      type: array
+      description: ''
+      default: null
+      items:
+        type: string
+      originalType: string[]
+    start_after:
+      type: string
+      description: ''
+      default: null
+      originalType: string
+  required: []

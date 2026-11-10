@@ -1,0 +1,21 @@
+summary: ''
+description: ''
+lock: '!inline u/epham2/nnas-application-status.script.lock'
+kind: script
+schema:
+  $schema: https://json-schema.org/draft/2020-12/schema
+  type: object
+  properties:
+    EMAIL:
+      type: string
+      description: ''
+      default: null
+      originalType: string
+    REFERENCE_ID:
+      type: string
+      description: ''
+      default: null
+      originalType: string
+  required:
+    - REFERENCE_ID
+    - EMAIL

@@ -1,0 +1,6 @@
+summary: Invite-NB-Applicant
+data:
+  tables: []
+extra_perms:
+  u/cbond: false
+  u/rbrathwaite: false

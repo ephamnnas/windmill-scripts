@@ -1,0 +1,28 @@
+summary: ''
+description: ''
+lock: '!inline u/knguyen/finalized-app-rbupload.script.lock'
+kind: script
+schema:
+  $schema: https://json-schema.org/draft/2020-12/schema
+  type: object
+  properties:
+    additional_content:
+      type: string
+      description: ''
+      default: null
+      originalType: string
+    dry_run:
+      type: boolean
+      description: ''
+      default: false
+    reference_id:
+      type: string
+      description: ''
+      default: null
+      originalType: string
+    user_id:
+      type: object
+      description: ''
+      default: null
+      format: resource-Any
+  required: []

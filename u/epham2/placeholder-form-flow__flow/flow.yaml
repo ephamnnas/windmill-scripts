@@ -1,0 +1,81 @@
+summary: ''
+description: ''
+value:
+  modules:
+    - id: a
+      summary: ''
+      value:
+        type: script
+        input_transforms:
+          id:
+            type: javascript
+            expr: flow_input.id
+          additional_content:
+            type: javascript
+            expr: flow_input.additional_content
+          ADDITIONAL_CONTENT:
+            type: javascript
+            expr: flow_input.additional_content
+          appid:
+            type: javascript
+            expr: flow_input.id
+          reference_id:
+            type: javascript
+            expr: flow_input.reference_id
+          REFERENCE_ID:
+            type: javascript
+            expr: flow_input.reference_id
+          user:
+            type: javascript
+            expr: flow_input.user
+          USER:
+            type: javascript
+            expr: flow_input.user
+          user_id:
+            type: javascript
+            expr: flow_input.user_id
+          USER_ID:
+            type: javascript
+            expr: flow_input.user_id
+        is_trigger: false
+        path: u/epham2/placeholder-form
+  groups: []
+schema:
+  order:
+    - id
+    - user
+    - award
+    - round
+    - title
+    - token
+    - status
+    - user_id
+    - last_edited
+    - date_created
+    - reference_id
+    - additional_content
+  properties:
+    id:
+      type: integer
+    additional_content:
+      type: string
+    award:
+      type: integer
+    date_created:
+      type: string
+    last_edited:
+      type: string
+    reference_id:
+      type: string
+    round:
+      type: integer
+    status:
+      type: integer
+    title:
+      type: string
+    token:
+      type: string
+    user:
+      type: string
+    user_id:
+      type: integer

@@ -1,0 +1,21 @@
+summary: ''
+description: ''
+lock: '!inline u/epham2/backup-registration-countries.script.lock'
+kind: script
+schema:
+  $schema: https://json-schema.org/draft/2020-12/schema
+  type: object
+  properties:
+    discover:
+      type: boolean
+      description: ''
+      default: false
+    sample_appid:
+      type: integer
+      description: ''
+      default: null
+    upload:
+      type: boolean
+      description: ''
+      default: true
+  required: []

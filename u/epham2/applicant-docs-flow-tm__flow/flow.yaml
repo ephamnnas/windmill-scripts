@@ -1,0 +1,94 @@
+summary: ''
+description: ''
+value:
+  modules:
+    - id: a
+      value:
+        type: script
+        input_transforms:
+          ADDITIONAL_CONTENT:
+            type: javascript
+            expr: flow_input.additional_content
+          APPLICATION_ID:
+            type: javascript
+            expr: flow_input.id
+          REFERENCE_ID:
+            type: javascript
+            expr: flow_input.reference_id
+          USER:
+            type: javascript
+            expr: flow_input.user
+        is_trigger: false
+        path: u/epham2/applicant-docs-tm
+    - id: b
+      value:
+        type: script
+        input_transforms:
+          id:
+            type: javascript
+            expr: flow_input.id
+          additional_content:
+            type: javascript
+            expr: flow_input.additional_content
+          dry_run:
+            type: static
+            value: false
+          ien_name:
+            type: static
+          mode:
+            type: static
+            value: per_rb_upsert
+          reference_id:
+            type: javascript
+            expr: flow_input.reference_id
+          title:
+            type: javascript
+            expr: flow_input.title
+          user_id:
+            type: javascript
+            expr: flow_input.user_id
+        is_trigger: false
+        path: u/knguyen/rb_wfr
+  groups: []
+schema:
+  $schema: https://json-schema.org/draft/2020-12/schema
+  type: object
+  order:
+    - id
+    - user
+    - award
+    - round
+    - title
+    - token
+    - status
+    - user_id
+    - last_edited
+    - date_created
+    - reference_id
+    - additional_content
+  properties:
+    id:
+      type: integer
+    additional_content:
+      type: string
+    award:
+      type: integer
+    date_created:
+      type: string
+    last_edited:
+      type: string
+    reference_id:
+      type: string
+    round:
+      type: integer
+    status:
+      type: integer
+    title:
+      type: string
+    token:
+      type: string
+    user:
+      type: string
+    user_id:
+      type: integer
+  required: []

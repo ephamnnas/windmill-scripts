@@ -1,0 +1,76 @@
+summary: ''
+description: ''
+lock: '!inline u/knguyen/transfer-provider.script.lock'
+kind: script
+schema:
+  $schema: https://json-schema.org/draft/2020-12/schema
+  type: object
+  properties:
+    ambiguous_field_policy:
+      type: string
+      description: ''
+      default: skip
+      originalType: string
+    copy_files:
+      type: boolean
+      description: ''
+      default: true
+    copy_signature_fields:
+      type: boolean
+      description: ''
+      default: false
+    create_payload_override:
+      type: object
+      description: ''
+      default: null
+      properties: {}
+    dry_run:
+      type: boolean
+      description: ''
+      default: true
+    extra_exclude_task_names:
+      type: array
+      description: ''
+      default: null
+      items:
+        type: string
+      originalType: string[]
+    fire_automations:
+      type: boolean
+      description: ''
+      default: false
+    include_empty_fields:
+      type: boolean
+      description: ''
+      default: false
+    mark_tasks_complete:
+      type: boolean
+      description: ''
+      default: false
+    max_file_mb:
+      type: integer
+      description: ''
+      default: 50
+    reference_target_application_id:
+      type: integer
+      description: ''
+      default: 0
+    reuse_existing_target:
+      type: boolean
+      description: ''
+      default: false
+    source_application_id:
+      type: integer
+      description: ''
+      default: null
+    target_application_id:
+      type: integer
+      description: ''
+      default: 0
+    target_program:
+      type: string
+      description: ''
+      default: auto
+      originalType: string
+  required:
+    - source_application_id

@@ -1,0 +1,26 @@
+summary: ''
+description: ''
+lock: '!inline u/epham2/translation_bill.script.lock'
+kind: script
+schema:
+  $schema: https://json-schema.org/draft/2020-12/schema
+  type: object
+  order:
+    - id
+    - application_id
+    - dry_run
+  properties:
+    id:
+      type: integer
+      description: ''
+      default: null
+    additional_content:
+      type: string
+      description: ''
+      default: ''
+      originalType: string
+    dry_run:
+      type: boolean
+      description: ''
+      default: false
+  required: []

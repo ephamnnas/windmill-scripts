@@ -1,0 +1,33 @@
+summary: ''
+description: ''
+lock: '!inline u/epham2/rb-portal-upload-only.script.lock'
+kind: script
+schema:
+  $schema: https://json-schema.org/draft/2020-12/schema
+  type: object
+  properties:
+    additional_content:
+      type: string
+      description: ''
+      default: null
+      originalType: string
+    dry_run:
+      type: boolean
+      description: ''
+      default: false
+    issued_date:
+      type: string
+      description: ''
+      default: null
+      originalType: string
+    reference_id:
+      type: string
+      description: ''
+      default: null
+      originalType: string
+    user_id:
+      type: object
+      description: ''
+      default: null
+      format: resource-Any
+  required: []

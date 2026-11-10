@@ -1,0 +1,48 @@
+summary: ''
+description: ''
+lock: '!inline u/knguyen/rb_wfr.script.lock'
+kind: script
+schema:
+  $schema: https://json-schema.org/draft/2020-12/schema
+  type: object
+  properties:
+    id:
+      type: object
+      description: ''
+      default: null
+      format: resource-Any
+    additional_content:
+      type: object
+      description: ''
+      default: null
+      format: resource-Any
+    dry_run:
+      type: boolean
+      description: ''
+      default: false
+    ien_name:
+      type: string
+      description: ''
+      default: null
+      originalType: string
+    mode:
+      type: string
+      description: ''
+      default: per_rb_upsert
+      originalType: string
+    reference_id:
+      type: string
+      description: ''
+      default: null
+      originalType: string
+    title:
+      type: string
+      description: ''
+      default: null
+      originalType: string
+    user_id:
+      type: object
+      description: ''
+      default: null
+      format: resource-Any
+  required: []

@@ -1,0 +1,46 @@
+summary: ''
+description: ''
+lock: '!inline u/epham2/ces-country-screen.script.lock'
+kind: script
+schema:
+  $schema: https://json-schema.org/draft/2020-12/schema
+  type: object
+  properties:
+    choice_maps:
+      type: object
+      description: ''
+      default: null
+      properties: {}
+    include_contact:
+      type: boolean
+      description: ''
+      default: true
+    limit:
+      type: integer
+      description: ''
+      default: 0
+    max_workers:
+      type: integer
+      description: ''
+      default: 4
+    mode:
+      type: string
+      description: ''
+      default: screen
+      originalType: string
+    program_id:
+      type: integer
+      description: ''
+      default: null
+    sharepoint_folder:
+      type: string
+      description: ''
+      default: null
+      originalType: string
+    upload_to_sharepoint:
+      type: boolean
+      description: ''
+      default: true
+  required:
+    - program_id
+    - sharepoint_folder

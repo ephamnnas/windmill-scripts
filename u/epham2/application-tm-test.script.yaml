@@ -1,0 +1,15 @@
+summary: ''
+description: ''
+lock: '!inline u/epham2/application-tm-test.script.lock'
+kind: script
+schema:
+  $schema: https://json-schema.org/draft/2020-12/schema
+  type: object
+  properties:
+    REFERENCE_ID:
+      type: string
+      description: ''
+      default: null
+      originalType: string
+  required:
+    - REFERENCE_ID

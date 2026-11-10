@@ -1,0 +1,13 @@
+summary: ''
+description: ''
+lock: '!inline u/epham2/pull-country-question-settings.script.lock'
+kind: script
+schema:
+  $schema: https://json-schema.org/draft/2020-12/schema
+  type: object
+  properties:
+    upload:
+      type: boolean
+      description: ''
+      default: false
+  required: []

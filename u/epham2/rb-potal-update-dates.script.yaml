@@ -1,0 +1,45 @@
+summary: ''
+description: ''
+lock: '!inline u/epham2/rb-potal-update-dates.script.lock'
+kind: script
+schema:
+  $schema: https://json-schema.org/draft/2020-12/schema
+  type: object
+  properties:
+    application_id:
+      type: string
+      description: ''
+      default: null
+      originalType: string
+    dry_run:
+      type: boolean
+      description: ''
+      default: true
+    expected_post_id:
+      type: integer
+      description: ''
+      default: null
+    issued_date:
+      type: string
+      description: ''
+      default: ''
+      originalType: string
+    order_date:
+      type: string
+      description: ''
+      default: ''
+      originalType: string
+    order_expiration_date:
+      type: string
+      description: ''
+      default: ''
+      originalType: string
+    regulatory_body:
+      type: string
+      description: ''
+      default: null
+      originalType: string
+  required:
+    - application_id
+    - regulatory_body
+    - expected_post_id

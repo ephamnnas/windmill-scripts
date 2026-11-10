@@ -1,0 +1,92 @@
+summary: ''
+description: ''
+value:
+  modules:
+    - id: a
+      value:
+        type: script
+        input_transforms:
+          additional_content:
+            type: javascript
+            expr: flow_input.additional_content
+          dry_run:
+            type: static
+            value: false
+          reference_id:
+            type: javascript
+            expr: flow_input.reference_id
+          user_id:
+            type: javascript
+            expr: flow_input.user_id
+        is_trigger: false
+        path: u/knguyen/finalize-and-push-to-sftp-TM/a
+    - id: b
+      value:
+        type: script
+        input_transforms:
+          appid:
+            type: javascript
+            expr: flow_input.id
+          dry_run:
+            type: static
+            value: false
+          force_complete:
+            type: static
+            value: false
+          mark_complete:
+            type: static
+            value: true
+          reference_id:
+            type: javascript
+            expr: flow_input.reference_id
+        is_trigger: false
+        path: u/knguyen/applicant-credential-report-upload-tm
+    - id: c
+      value:
+        type: script
+        input_transforms:
+          additional_content:
+            type: javascript
+            expr: flow_input.additional_content
+          dry_run:
+            type: static
+            value: false
+          reference_id:
+            type: javascript
+            expr: flow_input.reference_id
+          user_id:
+            type: javascript
+            expr: flow_input.user_id
+        is_trigger: false
+        path: u/knguyen/finalized-app-rbupload
+  groups: []
+schema:
+  $schema: https://json-schema.org/draft/2020-12/schema
+  type: object
+  order:
+    - reference_id
+    - id
+    - user_id
+    - additional_content
+    - dry_run
+  properties:
+    id:
+      type: number
+      description: Numeric SMApply application id (webhook 'id'); used in the upload URL.
+    additional_content:
+      type: string
+      description: Applicant additional piped values
+      default: ''
+    dry_run:
+      type: boolean
+      description: 'When true: build + upload to SharePoint, but skip SFTP push and
+        SMApply upload.'
+      default: false
+    reference_id:
+      type: string
+      description: NNAS-... reference; names the SharePoint folder and uploaded files
+      default: ''
+    user_id:
+      type: number
+      description: NNAS applicant id (webhook 'user_id')
+  required: []

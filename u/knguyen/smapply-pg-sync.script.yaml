@@ -1,0 +1,25 @@
+summary: ''
+description: ''
+lock: '!inline u/knguyen/smapply-pg-sync.script.lock'
+kind: script
+schema:
+  $schema: https://json-schema.org/draft/2020-12/schema
+  type: object
+  properties:
+    app_limit:
+      type: integer
+      description: ''
+      default: 0
+    full_resync:
+      type: boolean
+      description: ''
+      default: false
+    max_workers:
+      type: integer
+      description: ''
+      default: 8
+    per_page:
+      type: integer
+      description: ''
+      default: 25
+  required: []

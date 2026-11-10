@@ -1,0 +1,24 @@
+summary: ''
+description: ''
+lock: '!inline u/epham2/translation_paid.script.lock'
+kind: script
+schema:
+  $schema: https://json-schema.org/draft/2020-12/schema
+  type: object
+  properties:
+    id:
+      type: string
+      description: ''
+      default: ''
+      originalType: string
+    type:
+      type: string
+      description: ''
+      default: ''
+      originalType: string
+    event_id:
+      type: string
+      description: ''
+      default: ''
+      originalType: string
+  required: []

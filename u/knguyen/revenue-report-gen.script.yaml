@@ -1,0 +1,37 @@
+summary: ''
+description: ''
+lock: '!inline u/knguyen/revenue-report-gen.script.lock'
+kind: script
+schema:
+  $schema: https://json-schema.org/draft/2020-12/schema
+  type: object
+  properties:
+    probe_app_id:
+      type: integer
+      description: ''
+      default: 0
+    program_id:
+      type: integer
+      description: ''
+      default: 295185
+    report_month:
+      type: integer
+      description: ''
+      default: 7
+    report_year:
+      type: integer
+      description: ''
+      default: 2026
+    task_fetch_sleep:
+      type: number
+      description: ''
+      default: 0
+    tz_offset_hours:
+      type: integer
+      description: ''
+      default: 5
+    upload_to_sharepoint:
+      type: boolean
+      description: ''
+      default: true
+  required: []

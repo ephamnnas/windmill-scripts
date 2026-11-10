@@ -1,0 +1,48 @@
+summary: ''
+description: ''
+lock: '!inline u/knguyen/on-hold-api-report.script.lock'
+kind: script
+schema:
+  $schema: https://json-schema.org/draft/2020-12/schema
+  type: object
+  properties:
+    answer_labels:
+      type: object
+      description: ''
+      default:
+        '0': Yes
+        '1': No
+        '2': Unsure
+      properties: {}
+    eligibility_updated_since:
+      type: string
+      description: ''
+      default: ''
+      originalType: string
+    max_workers:
+      type: integer
+      description: ''
+      default: 3
+    only_without_application:
+      type: boolean
+      description: ''
+      default: false
+    question_label_starts_with:
+      type: string
+      description: ''
+      default: Is any part of your application connected
+      originalType: string
+    upload_to_sharepoint:
+      type: boolean
+      description: ''
+      default: true
+    wanted_answers:
+      type: array
+      description: ''
+      default:
+        - Yes
+        - Unsure
+      items:
+        type: string
+      originalType: string[]
+  required: []

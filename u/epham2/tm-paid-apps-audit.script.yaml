@@ -1,0 +1,21 @@
+summary: ''
+description: ''
+lock: '!inline u/epham2/tm-paid-apps-audit.script.lock'
+kind: script
+schema:
+  $schema: https://json-schema.org/draft/2020-12/schema
+  type: object
+  properties:
+    probe_app_id:
+      type: integer
+      description: ''
+      default: 0
+    program_id:
+      type: integer
+      description: ''
+      default: 295185
+    task_fetch_sleep:
+      type: number
+      description: ''
+      default: 0
+  required: []

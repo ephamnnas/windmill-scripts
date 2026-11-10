@@ -1,0 +1,29 @@
+summary: ''
+description: ''
+lock: '!inline u/epham2/applicant-copy-upload-ces-temp.script.lock'
+kind: script
+schema:
+  $schema: https://json-schema.org/draft/2020-12/schema
+  type: object
+  properties:
+    additional_content:
+      type: string
+      description: ''
+      default: null
+      originalType: string
+    appid:
+      type: object
+      description: ''
+      default: null
+      format: resource-Any
+    program_id:
+      type: object
+      description: ''
+      default: null
+      format: resource-Any
+    reference_id:
+      type: string
+      description: ''
+      default: null
+      originalType: string
+  required: []

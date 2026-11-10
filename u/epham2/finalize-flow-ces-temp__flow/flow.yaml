@@ -1,0 +1,207 @@
+summary: ''
+description: ''
+value:
+  modules:
+    - id: a
+      summary: ''
+      value:
+        type: script
+        input_transforms:
+          additional_content:
+            type: javascript
+            expr: flow_input.additional_content
+          reference_id:
+            type: javascript
+            expr: flow_input.reference_id
+          user_id:
+            type: javascript
+            expr: flow_input.user_id
+        is_trigger: false
+        path: u/epham2/finalize-and-push-to-sftp-ces-temp
+    - id: b
+      summary: ''
+      value:
+        type: script
+        input_transforms:
+          additional_content:
+            type: javascript
+            expr: flow_input.additional_content
+          appid:
+            type: javascript
+            expr: flow_input.id
+          reference_id:
+            type: javascript
+            expr: flow_input.reference_id
+        is_trigger: false
+        path: u/epham2/applicant-copy-upload-ces-temp
+  groups: []
+schema:
+  id: 35467636
+  additional_content: '{   "application_info": {     "provider":
+    "CES",     "nursing_group_selection": "",     "regulatory_body_rn": "College
+    of Nurses of Ontario",     "regulatory_body_lpn": "College of Nurses of
+    Ontario"   },    "assessment_notes":
+    {     "public":                    "<ul><li></li></ul>",     "assessment":                "<ul><li></li></ul>",     "identity_section_note":     "<ul><li></li></ul>",     "education_section_note":    "<ul><li></li></ul>",     "registration_section_note":
+    "<ul><li>Based on information contained in the CES International education
+    database, nurses in Ukraine are authorized to practice based on their
+    diploma. No separate registration is
+    required.</li></ul>"   },    "personal_info": {     "sa_salutation":
+    "MS.",     "sa_first_name": "HANNA",     "sa_middle_name":
+    "",     "sa_last_name": "SYDIUK",     "sa_other_names": "",     "sa_dob":
+    "1985/10/04",     "sa_email": "Hsydiuk@gmail.com",     "sa_phone_type":
+    "Mobile",     "sa_phone": "437 2672797",     "sa_alt_phone_type":
+    "Mobile",     "sa_alt_phone": "",     "sa_current_address_line1": "4230
+    Fieldgate drive",     "sa_current_address_line2": "",     "sa_current_city":
+    "Mississauga",     "sa_current_province":
+    "Ontario",     "sa_current_postal_code": "L4W2M5",     "sa_current_country":
+    "Canada",     "sa_mailing_same_as_current_flag":
+    "Yes",     "sa_mailing_address_line1": "",     "sa_mailing_address_line2":
+    "",     "sa_mailing_city": "",     "sa_mailing_province":
+    "",     "sa_mailing_postal_code": "",     "sa_mailing_country":
+    "",     "sa_initial_education_country": "Ukraine",     "sa_first_language":
+    ""   },    "registration": {     "sa_did_obtain_nursing_license_flag":
+    "No",     "sa_eligible_to_practice_in_initial_edu_jurisdiction_flag":
+    "",     "sa_diploma_grants_right_to_practice_flag": "",      "entry_1":
+    {       "sa_jurisdiction_name_1": "",       "sa_jurisdiction_address_1":
+    "ICAS 100 Stone Road West, Suite 102, Guelph, ON, Canada N1G
+    5L3",       "sa_registrant_name_issued_1":
+    "",       "sa_registration_title_1": "",       "sa_registration_method_1":
+    "",       "sa_exam_language_1": "",       "sa_registration_issued_date_1":
+    "",       "sa_registration_lifetime_flag_1":
+    "",       "sa_registration_expiry_date_1":
+    "",       "sa_registration_status_1":
+    "",       "sa_registration_discipline_flag_1":
+    "",       "sa_registration_number_1": ""     },      "entry_2":
+    {       "sa_jurisdiction_name_2": "",       "sa_jurisdiction_address_2":
+    "",       "sa_registrant_name_issued_2":
+    "",       "sa_registration_title_2": "",       "sa_registration_method_2":
+    "",       "sa_exam_language_2": "",       "sa_registration_issued_date_2":
+    "",       "sa_registration_lifetime_flag_2":
+    "",       "sa_registration_expiry_date_2":
+    "",       "sa_registration_status_2":
+    "",       "sa_registration_discipline_flag_2":
+    "",       "sa_registration_number_2": ""     },      "entry_3":
+    {       "sa_jurisdiction_name_3": "",       "sa_jurisdiction_address_3":
+    "",       "sa_registrant_name_issued_3":
+    "",       "sa_registration_title_3": "",       "sa_registration_method_3":
+    "",       "sa_exam_language_3": "",       "sa_registration_issued_date_3":
+    "",       "sa_registration_lifetime_flag_3":
+    "",       "sa_registration_expiry_date_3":
+    "",       "sa_registration_status_3":
+    "",       "sa_registration_discipline_flag_3":
+    "",       "sa_registration_number_3": ""     },      "entry_4":
+    {       "sa_jurisdiction_name_4": "",       "sa_jurisdiction_address_4":
+    "",       "sa_registrant_name_issued_4":
+    "",       "sa_registration_title_4": "",       "sa_registration_method_4":
+    "",       "sa_exam_language_4": "",       "sa_registration_issued_date_4":
+    "",       "sa_registration_lifetime_flag_4":
+    "",       "sa_registration_expiry_date_4":
+    "",       "sa_registration_status_4":
+    "",       "sa_registration_discipline_flag_4":
+    "",       "sa_registration_number_4": ""     },      "entry_5":
+    {       "sa_jurisdiction_name_5": "",       "sa_jurisdiction_address_5":
+    "",       "sa_registrant_name_issued_5":
+    "",       "sa_registration_title_5": "",       "sa_registration_method_5":
+    "",       "sa_exam_language_5": "",       "sa_registration_issued_date_5":
+    "",       "sa_registration_lifetime_flag_5":
+    "",       "sa_registration_expiry_date_5":
+    "",       "sa_registration_status_5":
+    "",       "sa_registration_discipline_flag_5":
+    "",       "sa_registration_number_5": ""     },      "entry_6":
+    {       "sa_jurisdiction_name_6": "",       "sa_jurisdiction_address_6":
+    "",       "sa_registrant_name_issued_6":
+    "",       "sa_registration_title_6": "",       "sa_registration_method_6":
+    "",       "sa_exam_language_6": "",       "sa_registration_issued_date_6":
+    "",       "sa_registration_lifetime_flag_6":
+    "",       "sa_registration_expiry_date_6":
+    "",       "sa_registration_status_6":
+    "",       "sa_registration_discipline_flag_6":
+    "",       "sa_registration_number_6": ""     },      "entry_7":
+    {       "sa_jurisdiction_name_7": "",       "sa_jurisdiction_address_7":
+    "",       "sa_registrant_name_issued_7":
+    "",       "sa_registration_title_7": "",       "sa_registration_method_7":
+    "",       "sa_exam_language_7": "",       "sa_registration_issued_date_7":
+    "",       "sa_registration_lifetime_flag_7":
+    "",       "sa_registration_expiry_date_7":
+    "",       "sa_registration_status_7":
+    "",       "sa_registration_discipline_flag_7":
+    "",       "sa_registration_number_7": ""     }   },    "c_sections":
+    {     "c1_identity_documents": {       "entry_1": {         "category":
+    "<ul><li>Passport</li></ul>",         "category_other":
+    "<ul><li></li></ul>",         "identity_document_number":
+    "<ul><li>UA173682</li></ul>",         "document_received_date":
+    "<ul><li>2026/07/01</li></ul>"       },       "entry_2":
+    {         "category": "<ul><li>Government-Issued Photo
+    ID</li></ul>",         "category_other":
+    "<ul><li></li></ul>",         "identity_document_number":
+    "<ul><li>11-2118-1575</li></ul>",         "document_received_date":
+    "<ul><li>2026/07/01</li></ul>"       }     },      "c3_registration_documents":
+    {       "entry_1": {         "registration_board_authority":
+    "",         "registration_license_number":
+    "",         "document_received_date": ""       },       "entry_2":
+    {         "registration_board_authority":
+    "",         "registration_license_number":
+    "",         "document_received_date": ""       },       "entry_3":
+    {         "registration_board_authority":
+    "",         "registration_license_number":
+    "",         "document_received_date": ""       },       "entry_4":
+    {         "registration_board_authority":
+    "",         "registration_license_number":
+    "",         "document_received_date": ""       },       "entry_5":
+    {         "registration_board_authority":
+    "",         "registration_license_number":
+    "",         "document_received_date": ""       }     }   } }'
+  award: 295865
+  date_created: 2026 Jul 1 10:09 PM
+  last_edited: 2026 Jul 29 08:53 PM
+  order:
+    - id
+    - user
+    - award
+    - round
+    - title
+    - token
+    - status
+    - user_id
+    - last_edited
+    - date_created
+    - reference_id
+    - additional_content
+    - order
+    - properties
+  properties:
+    id:
+      type: integer
+    additional_content:
+      type: string
+    award:
+      type: integer
+    date_created:
+      type: string
+    last_edited:
+      type: string
+    order:
+      type: array
+    properties:
+      type: object
+    reference_id:
+      type: string
+    round:
+      type: integer
+    status:
+      type: integer
+    title:
+      type: string
+    token:
+      type: string
+    user:
+      type: string
+    user_id:
+      type: integer
+  reference_id: NNAS-C-0000000330
+  round: 1369710
+  status: 1
+  title: NNAS-C-0000000330
+  token: hR28B2Mu75Y6xXarpzWo5weW3s68oWnP
+  user: Hanna Sydiuk
+  user_id: 131785285

@@ -1,0 +1,54 @@
+summary: ''
+description: ''
+value:
+  modules:
+    - id: a
+      summary: ''
+      value:
+        type: script
+        input_transforms:
+          id:
+            type: javascript
+            expr: flow_input.id
+          additional_content:
+            type: javascript
+            expr: flow_input.additional_content
+          dry_run:
+            type: static
+            value: false
+        is_trigger: false
+        path: u/epham2/translation_bill
+  groups: []
+schema:
+  id: 35367543
+  additional_content: '{ "id" : NNAS-T-0000000032,   "address_line1": "20158 82
+    ave",   "address_line2":
+    "",   "city":          "Langley",   "province":      "BC",   "postal_code":   "V2Y3Y6",   "country":       "Canada"
+    } }'
+  award: 295185
+  date_created: 06/04/2026 05:43 PM
+  last_edited: 08/24/2026 08:26 PM
+  order:
+    - id
+    - additional_content
+    - '**kwargs'
+  properties:
+    '**kwargs':
+      type: string
+      description: ''
+      default: ''
+    id:
+      type: integer
+      description: ''
+    additional_content:
+      type: string
+      description: ''
+      default: ''
+  reference_id: NNAS-T-0000000032
+  required: []
+  round: 1362840
+  status: 1
+  title: NNAS-T-0000000032
+  token: hR28B2Mu75Y6xXarpzWo5weW3s68oWnP
+  user: Test User
+  user_id: 129111389

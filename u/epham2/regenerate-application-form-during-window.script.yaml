@@ -1,0 +1,22 @@
+summary: ''
+description: ''
+lock: '!inline u/epham2/regenerate-application-form-during-window.script.lock'
+kind: script
+schema:
+  $schema: https://json-schema.org/draft/2020-12/schema
+  type: object
+  properties:
+    dry_run:
+      type: boolean
+      description: ''
+      default: true
+    max_regenerate:
+      type: integer
+      description: ''
+      default: 0
+    only:
+      type: string
+      description: ''
+      default: ''
+      originalType: string
+  required: []

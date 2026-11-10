@@ -1,0 +1,51 @@
+summary: ''
+description: ''
+lock: '!inline u/epham2/licensure-form-tm.script.lock'
+concurrent_limit: 1
+kind: script
+schema:
+  $schema: https://json-schema.org/draft/2020-12/schema
+  type: object
+  properties:
+    id:
+      type: ''
+      description: ''
+      default: null
+    additional_content:
+      type: ''
+      description: ''
+      default: null
+    ADDITIONAL_CONTENT:
+      type: ''
+      description: ''
+      default: null
+    appid:
+      type: ''
+      description: ''
+      default: null
+    reference_id:
+      type: ''
+      description: ''
+      default: null
+    REFERENCE_ID:
+      type: string
+      description: ''
+      default: null
+      originalType: string
+    user:
+      type: ''
+      description: ''
+      default: null
+    USER:
+      type: ''
+      description: ''
+      default: null
+    user_id:
+      type: ''
+      description: ''
+      default: null
+    USER_ID:
+      type: ''
+      description: ''
+      default: null
+  required: []

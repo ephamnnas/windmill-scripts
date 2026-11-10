@@ -1,0 +1,42 @@
+name: Log Windmill changes to Monday.com
+
+on:
+  push:
+    branches:
+      - main # Change this to the branch Windmill Git Sync pushes to
+
+permissions:
+  contents: read
+
+jobs:
+  log-to-monday:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository with history (needed to read each commit's changes)
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Create Monday.com items for changed Windmill objects
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          CLAUDE_MODEL: ${{ vars.CLAUDE_MODEL }}
+          MONDAY_API_TOKEN: ${{ secrets.MONDAY_API_TOKEN }}
+          MONDAY_BOARD_ID: ${{ vars.MONDAY_BOARD_ID }}
+          MONDAY_GROUP_ID: ${{ vars.MONDAY_GROUP_ID }}
+          MONDAY_COL_PATH: ${{ vars.MONDAY_COL_PATH }}
+          MONDAY_COL_AUTHOR: ${{ vars.MONDAY_COL_AUTHOR }}
+          MONDAY_COL_DATE: ${{ vars.MONDAY_COL_DATE }}
+          MONDAY_COL_TYPE: ${{ vars.MONDAY_COL_TYPE }}
+          MONDAY_COL_ACTION: ${{ vars.MONDAY_COL_ACTION }}
+          MONDAY_COL_MESSAGE: ${{ vars.MONDAY_COL_MESSAGE }}
+          MONDAY_COL_COMMIT_LINK: ${{ vars.MONDAY_COL_COMMIT_LINK }}
+          MONDAY_COL_WINDMILL_LINK: ${{ vars.MONDAY_COL_WINDMILL_LINK }}
+          WINDMILL_BASE_URL: ${{ vars.WINDMILL_BASE_URL }}
+          WINDMILL_WORKSPACE: ${{ vars.WINDMILL_WORKSPACE }}
+        run: python .github/scripts/log_to_monday.py

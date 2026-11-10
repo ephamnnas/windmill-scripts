@@ -2,6 +2,7 @@ version: v2
 locks:
   u/epham2/amend-index-csv: 85c923ae71d84129ec8fc5c0b9d0d4d3fe0b9aee663610649ebe0c1268230eaa
   u/epham2/amend-index-csv-flow__flow+__flow_hash: 44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a
+  u/epham2/another-monday-test-script: 4552e3a274a7d3a72c2f77a194c7003f2ce4fc80cccd9a51427266c0e56998ad
   u/epham2/applicant-copy-upload-ces-temp: d9c35d5f1fd2a8c12fef9b2febaebc98302fe60b5423865e47f642e720d33da1
   u/epham2/applicant-credential-report-upload-ces: e8b3cc1bfe904e588852a9870b05f596c9891959d2bd7e70096c0c87bf5fccd2
   u/epham2/applicant-docs-ces: 6c7b4c564ccc594b1a84c5f31b07c71d9401aace7a737e4873b9a231aa2cd022

@@ -1,0 +1,14 @@
+summary: ''
+description: ''
+lock: '!inline u/epham2/monday-change-log-test-script.script.lock'
+kind: script
+schema:
+  $schema: https://json-schema.org/draft/2020-12/schema
+  type: object
+  properties:
+    name:
+      type: string
+      description: ''
+      default: World
+      originalType: string
+  required: []

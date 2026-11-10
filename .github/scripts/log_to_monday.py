@@ -82,18 +82,41 @@ def object_from_file(file_path):
     return "Other", file_path
 
 
+def changed_files(sha):
+    """Ask Git which files a commit changed. Returns a list of (action, path).
+
+    GitHub's push details do not always list changed files (Windmill's pushes
+    arrive without them), so the repository history is the reliable source.
+    """
+    try:
+        out = subprocess.run(
+            ["git", "diff-tree", "--root", "--no-commit-id", "--name-status",
+             "--no-renames", "-r", sha],
+            capture_output=True, text=True, check=True,
+        ).stdout
+    except subprocess.CalledProcessError as exc:
+        print(f"Could not list files for {sha}: {exc.stderr.strip()}")
+        return []
+    actions = {"A": "added", "M": "modified", "D": "deleted"}
+    files = []
+    for line in out.splitlines():
+        parts = line.split("\t", 1)
+        if len(parts) == 2:
+            files.append((actions.get(parts[0][:1], "modified"), parts[1]))
+    return files
+
+
 def group_objects(commit):
     """Return a list of dicts: type, path, action and the files that changed."""
     objects = {}
-    for key, action in (("added", "added"), ("modified", "modified"), ("removed", "deleted")):
-        for file_path in commit.get(key, []):
-            if file_path.startswith(IGNORED_PREFIXES):
-                continue
-            obj_type, path = object_from_file(file_path)
-            obj = objects.setdefault((obj_type, path), {
-                "type": obj_type, "path": path, "actions": set(), "files": []})
-            obj["actions"].add(action)
-            obj["files"].append(file_path)
+    for action, file_path in changed_files(commit["id"]):
+        if file_path.startswith(IGNORED_PREFIXES):
+            continue
+        obj_type, path = object_from_file(file_path)
+        obj = objects.setdefault((obj_type, path), {
+            "type": obj_type, "path": path, "actions": set(), "files": []})
+        obj["actions"].add(action)
+        obj["files"].append(file_path)
     result = []
     for obj in objects.values():
         actions = obj.pop("actions")
@@ -215,7 +238,9 @@ def main():
 
     created = 0
     for commit in commits:
-        for obj in group_objects(commit):
+        objects = group_objects(commit)
+        print(f"Commit {commit['id'][:7]}: {len(objects)} Windmill object(s) changed")
+        for obj in objects:
             diff = get_diff(commit["id"], obj["files"])
             summary = summarise(obj, commit.get("message"), diff)
             name = summary or f"{obj['path']} ({obj['type']}) {obj['action']}"

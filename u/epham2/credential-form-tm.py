@@ -24,7 +24,7 @@ from pypdf import PdfReader, PdfWriter
 
 from reportlab.pdfgen import canvas
 from reportlab.lib import colors
-from reportlab.lib.utils import simpleSplit
+from reportlab.lib.utils import simpleSplit, ImageReader
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.platypus import Table, TableStyle, Paragraph
 
@@ -88,6 +88,38 @@ PART_C_Y_TOP           = 620 - ONE_INCH
 NOTES_SECTION_X        = 30
 NOTES_SECTION_W        = 550
 GAP_BETWEEN_NOTE_BOXES = 20
+
+# ---------------------------------------------------------
+# Notes box layout / overflow
+# ---------------------------------------------------------
+# Notes that don't fit on the template's notes page continue onto blank
+# pages inserted directly after it, under "<Header> (continued)".
+NOTES_HEADER_H          = 34
+NOTES_HEADER_FONT       = "Helvetica-Bold"
+NOTES_HEADER_SIZE       = 18
+NOTES_FONT              = "Helvetica"
+NOTES_FONT_SIZE         = 12
+NOTES_LEADING           = 16
+NOTES_TEXT_INSET        = 10   # left/right padding inside the box
+NOTES_BODY_TOP_PAD      = 20   # header bottom edge to first text baseline
+NOTES_BODY_EXTRA        = 20   # body height = lines * leading + this
+NOTES_BOTTOM_MARGIN     = 72   # keeps boxes clear of the footer logo
+NOTES_CONT_TOP_MARGIN   = 72   # top margin on continuation pages
+NOTES_MIN_LINES         = 2    # avoid leaving a lone line at a page bottom
+PUBLIC_NOTES_MIN_BODY_H     = 60
+ASSESSMENT_NOTES_MIN_BODY_H = 140
+
+# ---------------------------------------------------------
+# Notes page footer (copied onto continuation pages)
+# ---------------------------------------------------------
+# The footer artwork (NNAS / SNEI logo) is taken from the bottom of the
+# template's notes page and stamped onto each continuation page. Anything
+# (images, drawings, text) found within FOOTER_SEARCH_H of the bottom edge
+# of that page is treated as footer.
+FOOTER_SEARCH_H   = 150   # how far up from the page bottom to look for the footer
+FOOTER_PAD        = 4     # padding around the detected footer area
+FOOTER_RENDER_DPI = 300   # resolution of the copied footer image
+FOOTER_GAP_ABOVE  = 8     # minimum gap between the notes boxes and the footer
 
 EVALUATOR_LABEL_X1 = 73.7
 DATE_LABEL_X1      = 431.1
@@ -1807,40 +1839,115 @@ def build_part_c_sections(payload: Dict[str, Any]) -> List[Dict[str, Any]]:
 
 # =========================================================
 # PDF - PAGE 1: NOTES + METADATA
+# ---------------------------------------------------------
+# Notes are laid out BEFORE anything is drawn. layout_notes() fills the
+# template's notes page down to NOTES_BOTTOM_MARGIN; anything that doesn't
+# fit is carried onto continuation pages (blank pages inserted directly
+# after the notes page in populate_pdf), with the box header shown as
+# "<Header> (continued)". Previously the boxes simply grew past the bottom
+# of the page and the overflow was cut off.
 # =========================================================
 
-def draw_wrapped_text(c, text, *, x, y_top, w, font="Helvetica", size=12, leading=16):
-    c.setFont(font, size)
-    lines = wrap_lines(text, font, size, w)
-    y = y_top
-    for line in lines:
-        c.drawString(x, y, line)
-        y -= leading
+def notes_first_top(page_h: float) -> float:
+    """Top edge of the first notes box on the template's notes page."""
+    return (page_h * 0.65) - 108 - 72 + HALF_INCH
 
 
-def draw_notes_section(c, *, x, y_top, w, header_text, body_text,
-                       header_height=34, body_height=120):
-    total_height = header_height + body_height
-    y_bottom     = y_top - total_height
-    c.setStrokeColor(colors.black); c.setLineWidth(2)
-    c.rect(x, y_bottom, w, total_height, fill=0, stroke=1)
-    c.setFillColor(COLOR_HEADER_BG)
-    c.rect(x, y_top - header_height, w, header_height, fill=1, stroke=0)
-    c.setFillColor(COLOR_RED); c.setFont("Helvetica-Bold", 18)
-    c.drawCentredString(x + w / 2, y_top - header_height + 10, header_text)
-    c.setStrokeColor(colors.black); c.setLineWidth(1)
-    c.line(x, y_top - header_height, x + w, y_top - header_height)
-    c.setFillColor(colors.black)
-    draw_wrapped_text(c, body_text, x=x + 10, y_top=y_top - header_height - 20,
-                      w=w - 20, font="Helvetica", size=12, leading=16)
+_FOOTER_CACHE: Dict[str, Optional[Dict[str, Any]]] = {}
+_FOOTER_LOCK = threading.Lock()
 
 
-def render_assessment_notes_page1(c, payload, page_h, app_info: Dict[str, str]):
-    notes               = payload.get("assessment_notes") or {}
-    base_public         = safe_str(notes.get("public"))
-    identity_note       = safe_str(notes.get("identity_section_note"))
-    education_note      = safe_str(notes.get("education_section_note"))
-    registration_note   = safe_str(notes.get("registration_section_note"))
+def extract_notes_footer(template_path: str) -> Optional[Dict[str, Any]]:
+    """Copies the footer area from the template's notes page as a PNG.
+
+    Returns {"png", "x", "y", "w", "h"} in PDF points (bottom-left origin),
+    or None if no footer content is found. The footer is rasterised (rather
+    than copying the template page's vector content) so that none of the
+    template page's other text ends up hidden on the continuation page, where
+    it would otherwise surface in the PDF->DOCX conversion and text search.
+
+    PyMuPDF (fitz) is already installed as a dependency of pdf2docx. Cached
+    per template path, since populate_pdf() runs once per regulatory body.
+    """
+    with _FOOTER_LOCK:
+        if template_path in _FOOTER_CACHE:
+            return _FOOTER_CACHE[template_path]
+
+        result: Optional[Dict[str, Any]] = None
+        try:
+            try:
+                import pymupdf as fitz   # newer PyMuPDF releases
+            except ImportError:
+                import fitz              # older PyMuPDF releases
+
+            doc = fitz.open(template_path)
+            try:
+                if PAGE_NOTES < len(doc):
+                    page = doc[PAGE_NOTES]
+                    pr   = page.rect                      # top-left origin
+                    band_top = pr.y1 - FOOTER_SEARCH_H
+
+                    boxes = []
+                    for info in page.get_image_info():
+                        r = fitz.Rect(info["bbox"])
+                        if not r.is_empty and r.y0 >= band_top:
+                            boxes.append(r)
+                    for d in page.get_drawings():
+                        r = fitz.Rect(d["rect"])
+                        if not r.is_empty and r.y0 >= band_top:
+                            boxes.append(r)
+                    for b in page.get_text("blocks"):
+                        r = fitz.Rect(b[:4])
+                        if not r.is_empty and r.y0 >= band_top:
+                            boxes.append(r)
+
+                    if boxes:
+                        clip = fitz.Rect(boxes[0])
+                        for r in boxes[1:]:
+                            clip |= r
+                        clip = fitz.Rect(clip.x0 - FOOTER_PAD, clip.y0 - FOOTER_PAD,
+                                         clip.x1 + FOOTER_PAD, clip.y1 + FOOTER_PAD) & pr
+                        if not clip.is_empty:
+                            pix = page.get_pixmap(clip=clip, dpi=FOOTER_RENDER_DPI, alpha=False)
+                            result = {
+                                "png": pix.tobytes("png"),
+                                "x":   clip.x0,
+                                "y":   pr.y1 - clip.y1,   # convert to bottom-left origin
+                                "w":   clip.width,
+                                "h":   clip.height,
+                            }
+            finally:
+                doc.close()
+        except Exception:
+            result = None
+
+        _FOOTER_CACHE[template_path] = result
+        return result
+
+
+def notes_bottom_limit(footer: Optional[Dict[str, Any]]) -> float:
+    """Lowest point a notes box may reach: the fixed bottom margin, or just
+    above the footer artwork if that sits higher."""
+    if not footer:
+        return NOTES_BOTTOM_MARGIN
+    return max(NOTES_BOTTOM_MARGIN, footer["y"] + footer["h"] + FOOTER_GAP_ABOVE)
+
+
+def draw_notes_footer(c, footer: Optional[Dict[str, Any]]):
+    if not footer:
+        return
+    c.drawImage(ImageReader(BytesIO(footer["png"])),
+                footer["x"], footer["y"], width=footer["w"], height=footer["h"])
+
+
+def collect_notes_text(payload: Dict[str, Any]) -> Tuple[str, str]:
+    """Returns (public_text, assessment_text). The section notes (ID /
+    Education / Registration) are appended to the public note."""
+    notes             = payload.get("assessment_notes") or {}
+    base_public       = safe_str(notes.get("public"))
+    identity_note     = safe_str(notes.get("identity_section_note"))
+    education_note    = safe_str(notes.get("education_section_note"))
+    registration_note = safe_str(notes.get("registration_section_note"))
 
     section_lines = []
     if identity_note:
@@ -1853,14 +1960,138 @@ def render_assessment_notes_page1(c, payload, page_h, app_info: Dict[str, str]):
     appended        = "\n".join(section_lines)
     public_text     = "\n\n".join(p for p in [base_public, appended] if p)
     assessment_text = safe_str(notes.get("assessment"))
+    return public_text, assessment_text
 
+
+def layout_notes(sections, first_top: float, cont_top: float,
+                 bottom: float) -> List[List[Tuple[float, str, List[str], float]]]:
+    """
+    sections: list of (header, wrapped_lines, min_body_h)
+
+    Returns a list of pages. pages[0] is the template notes page, pages[1:]
+    are continuation pages. Each page is a list of placements:
+        (y_top, header_text, lines, body_h)
+    """
+    pages: List[List[Tuple[float, str, List[str], float]]] = [[]]
+    y = first_top
+
+    for header, lines, min_body_h in sections:
+        start, part = 0, 0
+        while start < len(lines):
+            # Don't open a continued box with blank lines.
+            if part > 0:
+                while start < len(lines) and not lines[start].strip():
+                    start += 1
+                if start >= len(lines):
+                    break
+
+            remaining = len(lines) - start
+            usable    = y - bottom - NOTES_HEADER_H - NOTES_BODY_EXTRA
+            fit       = max(0, int(usable // NOTES_LEADING))
+            need      = min(remaining, NOTES_MIN_LINES)
+
+            # Not enough room left here: start a new continuation page, unless
+            # we're already at the top of an empty continuation page.
+            on_empty_cont_page = len(pages) > 1 and not pages[-1]
+            if fit < need and not on_empty_cont_page:
+                pages.append([])
+                y = cont_top
+                continue
+
+            take   = min(max(fit, 1), remaining)
+            chunk  = lines[start:start + take]
+            body_h = len(chunk) * NOTES_LEADING + NOTES_BODY_EXTRA
+
+            # When the whole note fits in one box, keep the original minimum
+            # box height, but never extend past the bottom margin.
+            if part == 0 and take == remaining:
+                body_h = max(body_h, min(min_body_h, y - bottom - NOTES_HEADER_H))
+
+            title = header if part == 0 else f"{header} (continued)"
+            pages[-1].append((y, title, chunk, body_h))
+
+            y     -= NOTES_HEADER_H + body_h + GAP_BETWEEN_NOTE_BOXES
+            start += take
+            part  += 1
+
+    return pages
+
+
+def build_notes_pages(payload: Dict[str, Any], page_h: float,
+                      bottom: float = NOTES_BOTTOM_MARGIN):
+    public_text, assessment_text = collect_notes_text(payload)
+    wrap_w = NOTES_SECTION_W - 2 * NOTES_TEXT_INSET
+
+    sections = []
+    if public_text:
+        sections.append((
+            "Public Assessment Notes",
+            wrap_lines(public_text, NOTES_FONT, NOTES_FONT_SIZE, wrap_w),
+            PUBLIC_NOTES_MIN_BODY_H,
+        ))
+    if assessment_text:
+        sections.append((
+            "Assessment Notes",
+            wrap_lines(assessment_text, NOTES_FONT, NOTES_FONT_SIZE, wrap_w),
+            ASSESSMENT_NOTES_MIN_BODY_H,
+        ))
+
+    if not sections:
+        return [[]]
+
+    return layout_notes(
+        sections,
+        first_top=notes_first_top(page_h),
+        cont_top=page_h - NOTES_CONT_TOP_MARGIN,
+        bottom=bottom,
+    )
+
+
+def draw_notes_box(c, *, x, y_top, w, header_text, lines, body_height,
+                   header_height=NOTES_HEADER_H):
+    """Draws one notes box from pre-wrapped lines (same look as the previous
+    draw_notes_section)."""
+    total_height = header_height + body_height
+    y_bottom     = y_top - total_height
+
+    # Header background
+    c.setFillColor(COLOR_HEADER_BG)
+    c.rect(x, y_top - header_height, w, header_height, fill=1, stroke=0)
+
+    # Outer border (drawn after the header fill so it isn't painted over)
+    c.setStrokeColor(colors.black); c.setLineWidth(2)
+    c.rect(x, y_bottom, w, total_height, fill=0, stroke=1)
+
+    # Header text
+    c.setFillColor(COLOR_RED); c.setFont(NOTES_HEADER_FONT, NOTES_HEADER_SIZE)
+    c.drawCentredString(x + w / 2, y_top - header_height + 10, header_text)
+
+    # Header divider
+    c.setStrokeColor(colors.black); c.setLineWidth(1)
+    c.line(x, y_top - header_height, x + w, y_top - header_height)
+
+    # Body text
+    c.setFillColor(colors.black); c.setFont(NOTES_FONT, NOTES_FONT_SIZE)
+    ty = y_top - header_height - NOTES_BODY_TOP_PAD
+    for line in lines:
+        c.drawString(x + NOTES_TEXT_INSET, ty, line)
+        ty -= NOTES_LEADING
+
+
+def draw_note_placements(c, placements):
+    for y_top, header_text, lines, body_h in placements:
+        draw_notes_box(c, x=NOTES_SECTION_X, y_top=y_top, w=NOTES_SECTION_W,
+                       header_text=header_text, lines=lines, body_height=body_h)
+
+
+def render_assessment_notes_page1(c, payload, page_h, app_info: Dict[str, str],
+                                  placements=None):
     nursing_group      = app_info.get("nursing_group", "")
     province           = app_info.get("province", "")
     nnas_id            = app_info.get("nnas_id", "")
     application_number = app_info.get("application_number", "")
 
-    public_y_top     = (page_h * 0.65) - 108 - 72 + HALF_INCH
-    assessment_y_top = public_y_top - (34 + 60) - GAP_BETWEEN_NOTE_BOXES
+    public_y_top = notes_first_top(page_h)
 
     META_Y       = public_y_top + 160
     META_LEFT    = 30
@@ -1888,22 +2119,11 @@ def render_assessment_notes_page1(c, payload, page_h, app_info: Dict[str, str]):
     draw_meta_pair("NNAS ID Number:",     nnas_id,            META_LEFT, META_Y - META_LEADING)
     draw_meta_pair("Application Number:", application_number, META_MID,  META_Y - META_LEADING)
 
-    if not public_text and not assessment_text:
-        return
-
-    if public_text:
-        pub_lines  = wrap_lines(public_text, "Helvetica", 12, NOTES_SECTION_W - 20)
-        pub_body_h = max(60, len(pub_lines) * 16 + 20)
-        assessment_y_top = public_y_top - (34 + pub_body_h) - GAP_BETWEEN_NOTE_BOXES
-        draw_notes_section(c, x=NOTES_SECTION_X, y_top=public_y_top, w=NOTES_SECTION_W,
-                           header_text="Public Assessment Notes", body_text=public_text,
-                           header_height=34, body_height=pub_body_h)
-    if assessment_text:
-        asmt_lines  = wrap_lines(assessment_text, "Helvetica", 12, NOTES_SECTION_W - 20)
-        asmt_body_h = max(140, len(asmt_lines) * 16 + 20)
-        draw_notes_section(c, x=NOTES_SECTION_X, y_top=assessment_y_top, w=NOTES_SECTION_W,
-                           header_text="Assessment Notes", body_text=assessment_text,
-                           header_height=34, body_height=asmt_body_h)
+    # Only the boxes that fit on this page are drawn here; overflow is drawn
+    # on continuation pages by populate_pdf().
+    if placements is None:
+        placements = build_notes_pages(payload, page_h)[0]
+    draw_note_placements(c, placements)
 
 
 # =========================================================
@@ -2040,12 +2260,20 @@ def populate_pdf(template_path, payload, app_info: Dict[str, str],
     for p in reader.pages:
         writer.add_page(p)
 
+    notes_pages: List[List[Tuple[float, str, List[str], float]]] = [[]]
+    w0 = h0 = None
+    footer = extract_notes_footer(template_path)
+
     if PAGE_NOTES < len(writer.pages):
         page0  = writer.pages[PAGE_NOTES]
         w0, h0 = float(page0.mediabox.width), float(page0.mediabox.height)
+        # Keep boxes clear of the footer on every notes page, including the
+        # template page itself.
+        notes_pages = build_notes_pages(payload, h0, bottom=notes_bottom_limit(footer))
         overlay0 = build_overlay(
             w0, h0,
-            lambda c: render_assessment_notes_page1(c, payload, h0, app_info)
+            lambda c: render_assessment_notes_page1(c, payload, h0, app_info,
+                                                    placements=notes_pages[0])
         )
         page0.merge_page(overlay0.pages[0])
 
@@ -2076,6 +2304,22 @@ def populate_pdf(template_path, payload, app_info: Dict[str, str],
         page_ev.merge_page(overlay_ev.pages[0])
 
     render_part_c_last_page(writer, payload)
+
+    # Notes overflow: continuation pages inserted directly after the notes
+    # page, each carrying the template's footer. Done LAST so the fixed/relative page indices used above
+    # (PAGE_A1, PAGE_A2, evaluator = second-last, Part C = last) are not
+    # shifted while those pages are being populated.
+    if w0 is not None:
+        for i, placements in enumerate(notes_pages[1:], start=1):
+            idx = PAGE_NOTES + i
+            writer.insert_blank_page(width=w0, height=h0, index=idx)
+            overlay_cont = build_overlay(
+                w0, h0,
+                lambda c, _p=placements: (draw_notes_footer(c, footer),
+                                          draw_note_placements(c, _p))
+            )
+            writer.pages[idx].merge_page(overlay_cont.pages[0])
+
     return writer
 
 
@@ -2086,7 +2330,8 @@ def populate_pdf(template_path, payload, app_info: Dict[str, str],
 # exact same file that gets uploaded/emailed as the PDF deliverable) rather
 # than being hand-authored a second time with python-docx. This guarantees
 # the two output formats can never show different data - whatever ends up on
-# the PDF is what ends up in the DOCX, by construction.
+# the PDF is what ends up in the DOCX, by construction. (This includes any
+# notes continuation pages added by populate_pdf.)
 #
 # Tradeoffs found during testing (pdf2docx / PyMuPDF-based conversion):
 #   - Tables, cell shading, bold/color formatting, and embedded images all
@@ -2355,6 +2600,7 @@ def main(appid: Any,
     })
 
     template  = download_template()
+    dbg["notes_footer_found"] = extract_notes_footer(template) is not None
     # NOTE: logo download removed here. The DOCX is now produced by
     # converting the final PDF, so a logo will appear in the DOCX only if it
     # is already part of the base template PDF's pages. If it isn't, and you

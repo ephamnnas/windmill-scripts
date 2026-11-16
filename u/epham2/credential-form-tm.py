@@ -103,7 +103,7 @@ NOTES_LEADING           = 16
 NOTES_TEXT_INSET        = 10   # left/right padding inside the box
 NOTES_BODY_TOP_PAD      = 20   # header bottom edge to first text baseline
 NOTES_BODY_EXTRA        = 20   # body height = lines * leading + this
-NOTES_BOTTOM_MARGIN     = 36   # keeps boxes clear of the footer logo
+NOTES_BOTTOM_MARGIN     = 36   # fallback limit if no footer is detected
 NOTES_CONT_TOP_MARGIN   = 72   # top margin on continuation pages
 NOTES_MIN_LINES         = 2    # avoid leaving a lone line at a page bottom
 PUBLIC_NOTES_MIN_BODY_H     = 60
@@ -2006,6 +2006,11 @@ def layout_notes(sections, first_top: float, cont_top: float,
             # box height, but never extend past the bottom margin.
             if part == 0 and take == remaining:
                 body_h = max(body_h, min(min_body_h, y - bottom - NOTES_HEADER_H))
+
+            # A box that continues on the next page extends to the bottom limit,
+            # so it sits right above the footer instead of stopping at its last line.
+            if take < remaining:
+                body_h = y - bottom - NOTES_HEADER_H
 
             title = header if part == 0 else f"{header} (continued)"
             pages[-1].append((y, title, chunk, body_h))

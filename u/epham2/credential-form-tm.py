@@ -1887,19 +1887,30 @@ def extract_notes_footer(template_path: str) -> Optional[Dict[str, Any]]:
                     pr   = page.rect                      # top-left origin
                     band_top = pr.y1 - FOOTER_SEARCH_H
 
+                    # The footer logo is an image, so images are used first.
+                    # Drawings and text are only used if no image is found,
+                    # because templates often contain invisible or white
+                    # shapes (and stray text) low on the page that would make
+                    # the footer area, and the notes limit, far too tall.
                     boxes = []
                     for info in page.get_image_info():
                         r = fitz.Rect(info["bbox"])
                         if not r.is_empty and r.y0 >= band_top:
                             boxes.append(r)
-                    for d in page.get_drawings():
-                        r = fitz.Rect(d["rect"])
-                        if not r.is_empty and r.y0 >= band_top:
-                            boxes.append(r)
-                    for b in page.get_text("blocks"):
-                        r = fitz.Rect(b[:4])
-                        if not r.is_empty and r.y0 >= band_top:
-                            boxes.append(r)
+
+                    if not boxes:
+                        def _visible(col):
+                            return col is not None and any(v < 0.95 for v in col)
+                        for d in page.get_drawings():
+                            r = fitz.Rect(d["rect"])
+                            if r.is_empty or r.y0 < band_top:
+                                continue
+                            if _visible(d.get("fill")) or _visible(d.get("color")):
+                                boxes.append(r)
+                        for b in page.get_text("blocks"):
+                            r = fitz.Rect(b[:4])
+                            if not r.is_empty and r.y0 >= band_top and str(b[4]).strip():
+                                boxes.append(r)
 
                     if boxes:
                         clip = fitz.Rect(boxes[0])
@@ -2605,7 +2616,12 @@ def main(appid: Any,
     })
 
     template  = download_template()
-    dbg["notes_footer_found"] = extract_notes_footer(template) is not None
+    _footer = extract_notes_footer(template)
+    dbg["notes_footer_found"] = _footer is not None
+    dbg["notes_footer_rect"]  = None if not _footer else {
+        k: round(_footer[k], 1) for k in ("x", "y", "w", "h")
+    }
+    dbg["notes_bottom_limit"] = round(notes_bottom_limit(_footer), 1)
     # NOTE: logo download removed here. The DOCX is now produced by
     # converting the final PDF, so a logo will appear in the DOCX only if it
     # is already part of the base template PDF's pages. If it isn't, and you

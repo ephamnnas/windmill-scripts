@@ -103,7 +103,7 @@ NOTES_LEADING           = 16
 NOTES_TEXT_INSET        = 10   # left/right padding inside the box
 NOTES_BODY_TOP_PAD      = 20   # header bottom edge to first text baseline
 NOTES_BODY_EXTRA        = 20   # body height = lines * leading + this
-NOTES_BOTTOM_MARGIN     = 72   # keeps boxes clear of the footer logo
+NOTES_BOTTOM_MARGIN     = 36   # keeps boxes clear of the footer logo
 NOTES_CONT_TOP_MARGIN   = 72   # top margin on continuation pages
 NOTES_MIN_LINES         = 2    # avoid leaving a lone line at a page bottom
 PUBLIC_NOTES_MIN_BODY_H     = 60
@@ -119,7 +119,7 @@ ASSESSMENT_NOTES_MIN_BODY_H = 140
 FOOTER_SEARCH_H   = 150   # how far up from the page bottom to look for the footer
 FOOTER_PAD        = 4     # padding around the detected footer area
 FOOTER_RENDER_DPI = 300   # resolution of the copied footer image
-FOOTER_GAP_ABOVE  = 8     # minimum gap between the notes boxes and the footer
+FOOTER_GAP_ABOVE  = 4     # minimum gap between the notes boxes and the footer
 
 EVALUATOR_LABEL_X1 = 73.7
 DATE_LABEL_X1      = 431.1

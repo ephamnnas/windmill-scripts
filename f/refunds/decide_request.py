@@ -8,12 +8,17 @@ Windmill path: f/refunds/decide_request
 
 Approve or reject a pending request. On approve, the payment is re-checked in
 Stripe so a payment refunded elsewhere since the request cannot be approved.
-Rejections need a comment. Nobody can approve their own request.
+Rejections need a comment. Approving your own request is allowed only when
+ALLOW_SELF_APPROVAL is on; the processor is then the second person.
+On approval the processors are emailed; on rejection the requester is.
 """
 
 from f.refunds.common import (
+    ALLOW_SELF_APPROVAL,
+    PROCESSORS,
     backup_register,
     money,
+    notify,
     q_one,
     require,
     resolve_caller,
@@ -42,7 +47,7 @@ def main(request_id: int, decision: str, comment: str = "", ctx_email: str = "")
         require(who, "can_approve")
     if row["status"] != "pending_approval":
         raise ValueError(f"{row['ref']} is {row['status']}, not awaiting approval.")
-    if row["requested_by"] == who and not solo:
+    if row["requested_by"] == who and not (ALLOW_SELF_APPROVAL or solo):
         raise PermissionError("You cannot approve or reject your own request.")
 
     notes = []
@@ -76,8 +81,31 @@ def main(request_id: int, decision: str, comment: str = "", ctx_email: str = "")
     if not updated:
         raise RuntimeError(f"{row['ref']} changed while deciding. Refresh and retry.")
 
+    amount = money(row["requested_amount_cents"], row["currency"])
+    if new_status == "approved":
+        alert = notify(
+            PROCESSORS,
+            f"Refund {updated['ref']} approved: issue {amount}",
+            [
+                f"{updated['ref']} was approved by {who}.",
+                f"Application: {row['reference_id']}",
+                f"Amount: {amount} ({row['refund_type']})",
+                f"Stripe payment: {row['charge_id']}",
+                "",
+                "Next: refund this payment in Stripe, then open NNAS Refunds, paste "
+                "the Stripe refund id on this request and press Issue refund.",
+            ],
+        )
+    else:
+        alert = notify(
+            [row["requested_by"]],
+            f"Refund {updated['ref']} rejected: {row['reference_id']}",
+            [f"{updated['ref']} was rejected by {who}.", f"Comment: {comment}"],
+        )
+
     return {
         "result": f"{updated['ref']} {new_status}.",
-        "next": "Issue the refund in Stripe, then press Lock application." if new_status == "approved" else None,
+        "next": "Tracy has been asked to issue the refund." if new_status == "approved" else None,
         "backup": backup_register(new_status),
+        "alert": alert,
     }

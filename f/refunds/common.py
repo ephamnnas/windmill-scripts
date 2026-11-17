@@ -62,7 +62,7 @@ TEST_SOLO = True
 DATATABLE = "main"
 
 # --- Windmill paths -----------------------------------------------------
-STRIPE_KEY_VAR = "f/refunds/STRIPE_RESTRICTED_KEY"
+STRIPE_KEY_VAR = "u/epham2/STRIPE_SECRET_KEY"
 SMAPPLY_TOKEN_VAR = "u/epham2/SMAPPLY_ACCESS_TOKEN"
 AZURE_TENANT_VAR = "u/epham2/AZURE_TENANT_ID"
 SP_CLIENT_ID_VAR = "u/epham2/SHAREPOINT_CLIENT_ID"

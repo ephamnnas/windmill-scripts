@@ -6,12 +6,20 @@
 """
 Windmill path: f/refunds/create_request
 
-Creates a refund request after checking the SMApply application and the
-original Stripe payment. Run with dry_run=True first (the app's Check button)
-to see what will be saved.
+Step 2 of a new request. Takes the payment the requester picked from the
+f/refunds/find_payments list and creates the request. Run with dry_run=True
+first (the app's Check button) to see what will be saved.
 
 application: the application number (e.g. NNAS-T-0000001234) or the SMApply
 application ID (digits).
+payment_id:  the payment chosen from the list (the page sends it; requesters
+             never type it).
+email:       only if the payment was made under a different email than the
+             applicant's. Must be the same value used in find_payments.
+
+The payment is re-checked on the server: it must belong to that email in
+Stripe, so a payment id from anywhere else is refused. The email itself is
+not stored.
 
 Full refund: leave refund_amount blank. The amount is taken from Stripe
 (original amount minus anything already refunded).
@@ -25,6 +33,7 @@ from f.refunds.common import (
     REASONS,
     REFUNDED_LOCKED_STATUS_ID,
     backup_register,
+    clean_email,
     is_unique_violation,
     money,
     notify,
@@ -33,7 +42,7 @@ from f.refunds.common import (
     resolve_application_id,
     resolve_caller,
     resolve_charge,
-    smapply_snapshot,
+    smapply_application,
     stripe_init,
     to_cents,
 )
@@ -41,7 +50,8 @@ from f.refunds.common import (
 
 def main(
     application: str,
-    stripe_reference: str,
+    payment_id: str,
+    email: str = "",
     refund_type: str = "full",
     refund_amount: str = "",
     reason: str = "Duplicate payment",
@@ -64,15 +74,34 @@ def main(
             f"Do not include card or banking details."
         )
 
-    app = smapply_snapshot(resolve_application_id(application))
+    payment_id = (payment_id or "").strip()
+    if not payment_id.startswith(("ch_", "py_")):
+        raise ValueError("Choose a payment from the list first (Find payments).")
+
+    app, applicant_email, _created = smapply_application(resolve_application_id(application))
+    entered = clean_email(email)
+    payer_email = entered or applicant_email
+    if not payer_email:
+        raise ValueError("No email available for this application. Enter the payment email.")
+
     warnings = []
+    if entered and applicant_email and entered != applicant_email:
+        warnings.append(
+            "Payment was found under a different email than the applicant email "
+            "on the application."
+        )
     if app["state"] == LOCKED_STATE:
         warnings.append("This application is already locked in SMApply.")
     if app["status_id"] == REFUNDED_LOCKED_STATUS_ID:
         warnings.append("This application is already at Refunded - Locked.")
 
     mode = stripe_init()
-    ch = resolve_charge(stripe_reference)
+    ch = resolve_charge(payment_id)
+    if payer_email not in ch["payer_emails"]:
+        raise ValueError(
+            "That payment does not belong to this email in Stripe. Press Find "
+            "payments again and choose one from the list."
+        )
 
     if ch["invoice_application_id"] and str(ch["invoice_application_id"]) != str(app["application_id"]):
         raise ValueError(
@@ -173,7 +202,7 @@ def main(
             mode,
             app["application_id"], app["reference_id"], app["program"],
             app["stage_title"], app["status_name"], app["state"],
-            stripe_reference.strip(), ch["charge_id"], ch["payment_intent_id"],
+            "email lookup", ch["charge_id"], ch["payment_intent_id"],
             ch["amount_cents"], ch["refunded_cents"], ch["currency"], ch["created_at"],
             cents, refund_type, reason, details, who,
             "; ".join(warnings) or None,

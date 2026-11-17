@@ -20,6 +20,16 @@ schema:
       type: boolean
       description: ''
       default: true
+    email:
+      type: string
+      description: ''
+      default: ''
+      originalType: string
+    payment_id:
+      type: string
+      description: ''
+      default: null
+      originalType: string
     reason:
       type: string
       description: ''
@@ -40,11 +50,6 @@ schema:
       description: ''
       default: full
       originalType: string
-    stripe_reference:
-      type: string
-      description: ''
-      default: null
-      originalType: string
   required:
     - application
-    - stripe_reference
+    - payment_id

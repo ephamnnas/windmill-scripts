@@ -36,22 +36,36 @@ const REASONS = [
 
 const STATUS_LABEL: Record<string, string> = {
     pending_approval: 'Pending approval',
-    approved: 'Approved, refund in Stripe',
+    approved: 'Approved, awaiting refund',
     rejected: 'Rejected',
-    refunded: 'Refunded, lock pending',
+    refunded: 'Refunded, issue pending',
     closed: 'Closed',
 }
 
-// Runnable IDs in the editor: a=whoami, b=list_requests, c=create_request,
-// d=decide_request, e=complete_and_lock. Named IDs are used if you rename them.
+// Runnable IDs as shown on the badges in the editor's BACKEND panel.
+// If you delete and re-add a runnable it gets a new letter: change it here.
+//
+// These are called by ID on purpose. `backend` answers to ANY name, so a
+// name that does not exist does not fail, it just never returns.
+const RUNNABLE_ID = {
+    whoami: 'a',
+    list_requests: 'b',
+    create_request: 'c',
+    decide_request: 'd',
+    complete_and_lock: 'e',
+    find_payments: 'f',
+}
+
 const B = backend as any
+const call = (id: string) => (args: Record<string, any> = {}) => B[id](args)
 
 const api = {
-    whoami: B.whoami ?? B.a,
-    list_requests: B.list_requests ?? B.b,
-    create_request: B.create_request ?? B.c,
-    decide_request: B.decide_request ?? B.d,
-    complete_and_lock: B.complete_and_lock ?? B.e,
+    whoami: call(RUNNABLE_ID.whoami),
+    list_requests: call(RUNNABLE_ID.list_requests),
+    create_request: call(RUNNABLE_ID.create_request),
+    decide_request: call(RUNNABLE_ID.decide_request),
+    complete_and_lock: call(RUNNABLE_ID.complete_and_lock),
+    find_payments: call(RUNNABLE_ID.find_payments),
 }
 
 function errText(e: any): string {
@@ -89,30 +103,28 @@ export default function App() {
     useEffect(() => {
         let done = false
         const t = setTimeout(() => {
-            if (!done) setLoadErr('No answer from whoami after 60 seconds. Open Jobs (top right) and check the latest run.')
+            if (!done) {
+                setLoadErr(
+                    `No answer from runnable "${RUNNABLE_ID.whoami}" after 60 seconds. Check that the ` +
+                    'letters in RUNNABLE_ID (top of App.tsx) match the badges in the BACKEND panel.'
+                )
+            }
         }, 60000)
-            ; (async () => {
-                try {
-                    if (typeof api.whoami !== 'function') {
-                        throw new Error(
-                            `whoami runnable not found. Backend runnables available: ${Object.keys(B).join(', ') || 'none'}`
-                        )
-                    }
-                    const p = await B.ping({})
-                    throw new Error(`ping returned ${JSON.stringify(p)}`)
-                    const r = await api.whoami({})
-                    done = true
-                    if (!r || typeof r !== 'object' || !r.roles) {
-                        throw new Error(`whoami returned an unexpected result: ${JSON.stringify(r) ?? 'undefined'}`)
-                    }
-                    setMe(r)
-                } catch (e) {
-                    done = true
-                    setLoadErr(errText(e))
-                } finally {
-                    clearTimeout(t)
+        ;(async () => {
+            try {
+                const r = await api.whoami({})
+                done = true
+                if (!r || typeof r !== 'object' || !r.roles) {
+                    throw new Error(`whoami returned an unexpected result: ${JSON.stringify(r) ?? 'undefined'}`)
                 }
-            })()
+                setMe(r)
+            } catch (e) {
+                done = true
+                setLoadErr(errText(e))
+            } finally {
+                clearTimeout(t)
+            }
+        })()
         return () => clearTimeout(t)
     }, [])
 
@@ -155,8 +167,9 @@ export default function App() {
             {me.test_mode && (
                 <Notice
                     kind="warn"
-                    text={`Test mode: only application ${me.test_application_ids.join(', ')} can be locked.${me.test_solo ? ' Admin can run every step alone with a test-mode Stripe key.' : ''
-                        }`}
+                    text={`Test mode: only application ${me.test_application_ids.join(', ')} can be locked.${
+                        me.test_solo ? ' Admin can run every step alone with a test-mode Stripe key.' : ''
+                    }`}
                 />
             )}
 
@@ -183,6 +196,7 @@ function RequestsView({ me, refreshKey }: { me: Me; refreshKey: number }) {
     const [loading, setLoading] = useState(false)
     const [err, setErr] = useState('')
     const [selectedId, setSelectedId] = useState<number | null>(null)
+    const [find, setFind] = useState('')
 
     async function load() {
         setLoading(true)
@@ -199,6 +213,13 @@ function RequestsView({ me, refreshKey }: { me: Me; refreshKey: number }) {
         load()
     }, [view, refreshKey])
 
+    const needle = find.trim().toLowerCase()
+    const shown = needle
+        ? rows.filter((x) =>
+              [x.reference_id, x.application_id, x.ref, x.requested_by]
+                  .some((v) => String(v ?? '').toLowerCase().includes(needle))
+          )
+        : rows
     const selected = rows.find((x) => x.id === selectedId) ?? null
 
     return (
@@ -212,11 +233,19 @@ function RequestsView({ me, refreshKey }: { me: Me; refreshKey: number }) {
                             </button>
                         ))}
                     </div>
+                    <input
+                        className="find"
+                        placeholder="Find by application number, RF number or person"
+                        value={find}
+                        onChange={(e) => setFind(e.target.value)}
+                    />
                     <button onClick={load} disabled={loading}>{loading ? 'Loading...' : 'Refresh'}</button>
                 </div>
                 <Notice kind="err" text={err} />
-                {rows.length === 0 && !loading && !err && <div className="muted pad">No requests.</div>}
-                {rows.length > 0 && (
+                {shown.length === 0 && !loading && !err && (
+                    <div className="muted pad">{needle ? 'Nothing matches that search.' : 'No requests.'}</div>
+                )}
+                {shown.length > 0 && (
                     <div className="table-wrap">
                         <table>
                             <thead>
@@ -231,7 +260,7 @@ function RequestsView({ me, refreshKey }: { me: Me; refreshKey: number }) {
                                 </tr>
                             </thead>
                             <tbody>
-                                {rows.map((x) => (
+                                {shown.map((x) => (
                                     <tr
                                         key={x.id}
                                         className={x.id === selectedId ? 'selected' : ''}
@@ -277,7 +306,7 @@ function Detail({ row, me, onChanged }: { row: Row; me: Me; onChanged: () => voi
     const [ok, setOk] = useState('')
     const [err, setErr] = useState('')
 
-    const canDecide = row.status === 'pending_approval' && (r.can_approve || r.admin)
+    const canDecide = row.status === 'pending_approval' && (r.can_approve || (r.admin && me.test_solo))
     const canLock = (row.status === 'approved' || row.status === 'refunded') && r.can_process
 
     async function run(fn: () => Promise<any>) {
@@ -286,7 +315,9 @@ function Detail({ row, me, onChanged }: { row: Row; me: Me; onChanged: () => voi
         setErr('')
         try {
             const res = await fn()
-            const extra = [res?.next, res?.backup?.startsWith?.('BACKUP FAILED') ? res.backup : '']
+            const flagged = (v: any) => (typeof v === 'string' && /FAILED|SKIPPED/.test(v) ? v : '')
+            const sent = typeof res?.alert === 'string' && res.alert.startsWith('alert sent') ? `(${res.alert})` : ''
+            const extra = [res?.next, sent, flagged(res?.backup), flagged(res?.alert)]
                 .filter(Boolean)
                 .join(' ')
             setOk(`${res?.result ?? 'Done.'} ${extra}`.trim())
@@ -354,12 +385,13 @@ function Detail({ row, me, onChanged }: { row: Row; me: Me; onChanged: () => voi
 
             {canLock && (
                 <div className="action">
-                    <h3>Lock application</h3>
+                    <h3>Issue refund</h3>
                     {row.status === 'approved' ? (
                         <>
                             <p className="muted small">
                                 1. Issue the refund of {row.amount} in Stripe on payment {row.charge_id}.
-                                <br />2. Paste the Stripe refund id (re_...) and lock.
+                                <br />2. Paste the Stripe refund id (re_...) and press Issue refund. This verifies
+                                the refund, locks the application at Refunded - Locked and alerts the approver.
                             </p>
                             <input
                                 className="mono"
@@ -372,7 +404,7 @@ function Detail({ row, me, onChanged }: { row: Row; me: Me; onChanged: () => voi
                             />
                         </>
                     ) : (
-                        <p className="muted small">Refund is already verified. Locking will retry the SMApply step only.</p>
+                        <p className="muted small">Refund is already verified. This retries the SMApply lock only.</p>
                     )}
                     <div className="row">
                         {!armed ? (
@@ -381,12 +413,12 @@ function Detail({ row, me, onChanged }: { row: Row; me: Me; onChanged: () => voi
                                 disabled={busy || (row.status === 'approved' && !refundId.trim())}
                                 onClick={() => setArmed(true)}
                             >
-                                Lock application
+                                Issue refund
                             </button>
                         ) : (
                             <>
                                 <button className="danger" disabled={busy} onClick={lock}>
-                                    {busy ? 'Locking...' : 'Confirm: verify refund and lock'}
+                                    {busy ? 'Working...' : 'Confirm: verify refund and lock application'}
                                 </button>
                                 <button disabled={busy} onClick={() => setArmed(false)}>Cancel</button>
                             </>
@@ -403,20 +435,37 @@ function Detail({ row, me, onChanged }: { row: Row; me: Me; onChanged: () => voi
 }
 
 // ============================================================== New request
+//
+// Requesters do not have Stripe ids. They give an application number (and an
+// email only if the payment was made under a different one), the server finds
+// the Stripe payments for that email, and they pick one from the list.
 
 function NewRequest({ onCreated }: { onCreated: () => void }) {
-    const [applicationId, setApplicationId] = useState('')
-    const [stripeRef, setStripeRef] = useState('')
+    const [application, setApplication] = useState('')
+    const [email, setEmail] = useState('')
+    const [found, setFound] = useState<any>(null)
+    const [paymentId, setPaymentId] = useState('')
     const [refundType, setRefundType] = useState<'full' | 'partial'>('full')
     const [amount, setAmount] = useState('')
     const [reason, setReason] = useState(REASONS[0])
     const [details, setDetails] = useState('')
     const [preview, setPreview] = useState<any>(null)
-    const [busy, setBusy] = useState(false)
+    const [busy, setBusy] = useState('')
     const [ok, setOk] = useState('')
     const [err, setErr] = useState('')
 
-    // Any edit invalidates the last check, so Submit always matches a fresh Check.
+    // Changing the application or email clears everything found for the old one.
+    function editLookup(setter: (v: string) => void) {
+        return (v: string) => {
+            setter(v)
+            setFound(null)
+            setPaymentId('')
+            setPreview(null)
+            setOk('')
+        }
+    }
+
+    // Any other edit invalidates the last check, so Submit always matches a fresh Check.
     function edit<T>(setter: (v: T) => void) {
         return (v: T) => {
             setter(v)
@@ -425,10 +474,29 @@ function NewRequest({ onCreated }: { onCreated: () => void }) {
         }
     }
 
+    async function findPayments() {
+        setBusy('find')
+        setErr('')
+        setOk('')
+        setFound(null)
+        setPaymentId('')
+        setPreview(null)
+        try {
+            const res = await api.find_payments({ application: application.trim(), email: email.trim() })
+            setFound(res)
+            const pickable = (res?.payments ?? []).filter((p: any) => p.selectable)
+            if (pickable.length === 1) setPaymentId(pickable[0].payment_id)
+        } catch (e) {
+            setErr(errText(e))
+        }
+        setBusy('')
+    }
+
     function args(dry_run: boolean) {
         return {
-            application_id: Number(applicationId),
-            stripe_reference: stripeRef.trim(),
+            application: application.trim(),
+            payment_id: paymentId,
+            email: email.trim(),
             refund_type: refundType,
             refund_amount: refundType === 'partial' ? amount.trim() : '',
             reason,
@@ -438,7 +506,7 @@ function NewRequest({ onCreated }: { onCreated: () => void }) {
     }
 
     async function check() {
-        setBusy(true)
+        setBusy('check')
         setErr('')
         setOk('')
         setPreview(null)
@@ -447,74 +515,165 @@ function NewRequest({ onCreated }: { onCreated: () => void }) {
         } catch (e) {
             setErr(errText(e))
         }
-        setBusy(false)
+        setBusy('')
     }
 
     async function submit() {
-        setBusy(true)
+        setBusy('submit')
         setErr('')
         try {
             const res = await api.create_request(args(false))
-            setOk(res?.result ?? 'Submitted.')
+            const note = typeof res?.alert === 'string' && /sent|FAILED|SKIPPED/.test(res.alert) ? ` (${res.alert})` : ''
+            setOk(`${res?.result ?? 'Submitted.'}${note}`)
             setPreview(null)
-            setApplicationId('')
-            setStripeRef('')
+            setFound(null)
+            setPaymentId('')
+            setApplication('')
+            setEmail('')
             setAmount('')
             setDetails('')
-            setTimeout(onCreated, 1200)
+            setTimeout(onCreated, 1500)
         } catch (e) {
             setErr(errText(e))
         }
-        setBusy(false)
+        setBusy('')
     }
 
-    const ready = /^\d+$/.test(applicationId.trim()) && stripeRef.trim() && details.trim().length >= 15 &&
-        (refundType === 'full' || amount.trim())
+    const payments: any[] = found?.payments ?? []
+    const ready = paymentId && details.trim().length >= 15 && (refundType === 'full' || amount.trim())
 
     return (
         <div className="layout">
             <section className="card">
                 <h2>New refund request</h2>
+
+                <h3>1. Find the payment</h3>
                 <div className="form">
-                    <label>SMApply application ID
-                        <input value={applicationId} inputMode="numeric" placeholder="e.g. 35367543"
-                            onChange={(e) => edit(setApplicationId)(e.target.value)} />
+                    <label>Application number or SMApply ID
+                        <input value={application} placeholder="e.g. NNAS-T-0000000032 or 35367543"
+                            onChange={(e) => editLookup(setApplication)(e.target.value)} />
                     </label>
-                    <label>Stripe payment ID
-                        <input className="mono" value={stripeRef} placeholder="pi_..., ch_... or in_..."
-                            onChange={(e) => edit(setStripeRef)(e.target.value)} />
-                    </label>
-                    <label>Refund type
-                        <select value={refundType} onChange={(e) => edit(setRefundType)(e.target.value as any)}>
-                            <option value="full">Full (amount from Stripe)</option>
-                            <option value="partial">Partial</option>
-                        </select>
-                    </label>
-                    {refundType === 'partial' && (
-                        <label>Amount
-                            <input value={amount} inputMode="decimal" placeholder="e.g. 125.00"
-                                onChange={(e) => edit(setAmount)(e.target.value)} />
-                        </label>
-                    )}
-                    <label>Reason
-                        <select value={reason} onChange={(e) => edit(setReason)(e.target.value)}>
-                            {REASONS.map((x) => <option key={x}>{x}</option>)}
-                        </select>
-                    </label>
-                    <label>Details
-                        <textarea rows={4} value={details}
-                            placeholder="Why the refund is due. No card or banking details."
-                            onChange={(e) => edit(setDetails)(e.target.value)} />
-                        <span className="muted small">{details.trim().length} / 15 characters minimum</span>
+                    <label>Payment email (optional)
+                        <input value={email} type="email" placeholder="Leave blank to use the applicant email on the application"
+                            onChange={(e) => editLookup(setEmail)(e.target.value)} />
+                        <span className="muted small">Only needed if the payment was made with a different email.</span>
                     </label>
                 </div>
                 <div className="row">
-                    <button disabled={busy || !ready} onClick={check}>{busy && !preview ? 'Checking...' : 'Check'}</button>
-                    <button className="primary" disabled={busy || !preview} onClick={submit}>
-                        {busy && preview ? 'Submitting...' : 'Submit request'}
+                    <button className="primary" disabled={!!busy || !application.trim()} onClick={findPayments}>
+                        {busy === 'find' ? 'Searching Stripe...' : 'Find payments'}
                     </button>
                 </div>
-                <p className="muted small">Check verifies the application and the payment in Stripe. Nothing is saved until Submit.</p>
+
+                {found && (
+                    <>
+                        <dl className="facts found">
+                            <dt>Application</dt><dd>{found.application?.reference_id} ({found.application?.application_id})</dd>
+                            <dt>Program</dt><dd>{found.application?.program}</dd>
+                            <dt>Stage / status</dt><dd>{found.application?.stage} / {found.application?.status ?? 'none'}</dd>
+                            <dt>Email used</dt>
+                            <dd>
+                                {found.email_used}, {found.email_source === 'entered' ? 'as entered' : 'from the application'}
+                                {found.stripe_mode === 'test' && <span className="test-tag">STRIPE TEST MODE</span>}
+                            </dd>
+                        </dl>
+                        {(found.notes ?? []).map((n: string) => <Notice key={n} kind="warn" text={n} />)}
+
+                        {payments.length > 0 && (
+                            <>
+                                <h3>2. Choose the payment to refund</h3>
+                                <div className="table-wrap">
+                                    <table>
+                                        <thead>
+                                            <tr>
+                                                <th></th>
+                                                <th>Paid</th>
+                                                <th className="num">Amount</th>
+                                                <th className="num">Refunded</th>
+                                                <th className="num">Refundable</th>
+                                                <th>Description</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody>
+                                            {payments.map((p) => (
+                                                <tr
+                                                    key={p.payment_id}
+                                                    className={
+                                                        (p.payment_id === paymentId ? 'selected ' : '') +
+                                                        (p.selectable ? '' : 'disabled')
+                                                    }
+                                                    onClick={() => p.selectable && edit(setPaymentId)(p.payment_id)}
+                                                >
+                                                    <td>
+                                                        <input
+                                                            type="radio"
+                                                            name="payment"
+                                                            checked={p.payment_id === paymentId}
+                                                            disabled={!p.selectable}
+                                                            onChange={() => edit(setPaymentId)(p.payment_id)}
+                                                        />
+                                                    </td>
+                                                    <td>{when(p.paid_on)}</td>
+                                                    <td className="num">{p.amount}</td>
+                                                    <td className="num">{p.refunded}</td>
+                                                    <td className="num">{p.refundable}</td>
+                                                    <td>
+                                                        {p.open_request
+                                                            ? `Already requested: ${p.open_request}`
+                                                            : p.refundable_cents <= 0
+                                                                ? 'Fully refunded'
+                                                                : p.description}
+                                                    </td>
+                                                </tr>
+                                            ))}
+                                        </tbody>
+                                    </table>
+                                </div>
+                            </>
+                        )}
+                    </>
+                )}
+
+                {paymentId && (
+                    <>
+                        <h3>3. Refund details</h3>
+                        <div className="form">
+                            <label>Refund type
+                                <select value={refundType} onChange={(e) => edit(setRefundType)(e.target.value as any)}>
+                                    <option value="full">Full (everything still refundable)</option>
+                                    <option value="partial">Partial</option>
+                                </select>
+                            </label>
+                            {refundType === 'partial' && (
+                                <label>Amount
+                                    <input value={amount} inputMode="decimal" placeholder="e.g. 125.00"
+                                        onChange={(e) => edit(setAmount)(e.target.value)} />
+                                </label>
+                            )}
+                            <label>Reason
+                                <select value={reason} onChange={(e) => edit(setReason)(e.target.value)}>
+                                    {REASONS.map((x) => <option key={x}>{x}</option>)}
+                                </select>
+                            </label>
+                            <label>Details
+                                <textarea rows={4} value={details}
+                                    placeholder="Why the refund is due. No card or banking details."
+                                    onChange={(e) => edit(setDetails)(e.target.value)} />
+                                <span className="muted small">{details.trim().length} / 15 characters minimum</span>
+                            </label>
+                        </div>
+                        <div className="row">
+                            <button disabled={!!busy || !ready} onClick={check}>
+                                {busy === 'check' ? 'Checking...' : 'Check'}
+                            </button>
+                            <button className="primary" disabled={!!busy || !preview} onClick={submit}>
+                                {busy === 'submit' ? 'Submitting...' : 'Submit request'}
+                            </button>
+                        </div>
+                        <p className="muted small">Nothing is saved until Submit.</p>
+                    </>
+                )}
+
                 <Notice kind="ok" text={ok} />
                 <Notice kind="err" text={err} />
             </section>
@@ -526,7 +685,6 @@ function NewRequest({ onCreated }: { onCreated: () => void }) {
                         <dl className="facts">
                             <dt>Application</dt><dd>{preview.application?.reference_id} ({preview.application?.application_id})</dd>
                             <dt>Program</dt><dd>{preview.application?.program}</dd>
-                            <dt>Stage / status</dt><dd>{preview.application?.stage} / {preview.application?.status ?? 'none'}</dd>
                             <dt>Stripe</dt><dd>{preview.payment?.stripe_mode === 'test' ? 'TEST MODE' : 'Live'}</dd>
                             <dt>Paid</dt><dd>{preview.payment?.original}, {when(preview.payment?.paid_on)}</dd>
                             <dt>Already refunded</dt><dd>{preview.payment?.already_refunded}</dd>
@@ -536,7 +694,10 @@ function NewRequest({ onCreated }: { onCreated: () => void }) {
                         {(preview.warnings ?? []).map((w: string) => <Notice key={w} kind="warn" text={w} />)}
                     </div>
                 ) : (
-                    <div className="muted pad">Fill in the form and press Check. The verified payment details appear here.</div>
+                    <div className="muted pad">
+                        Enter the application number and press Find payments. Pick the payment, fill in the
+                        refund details and press Check. The verified summary appears here.
+                    </div>
                 )}
             </section>
         </div>

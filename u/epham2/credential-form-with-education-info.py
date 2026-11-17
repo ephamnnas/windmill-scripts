@@ -2,6 +2,7 @@
 # requirements:
 # pypdf
 # pdfplumber
+# pymupdf
 # reportlab
 # requests
 # wmill
@@ -26,7 +27,7 @@ from pypdf import PdfReader, PdfWriter
 
 from reportlab.pdfgen import canvas
 from reportlab.lib import colors
-from reportlab.lib.utils import simpleSplit
+from reportlab.lib.utils import simpleSplit, ImageReader
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.platypus import Table, TableStyle, Paragraph
 
@@ -78,6 +79,38 @@ NOTES_SECTION_X        = 30
 NOTES_SECTION_W        = 550
 GAP_BETWEEN_NOTE_BOXES = 20
 
+# ---------------------------------------------------------
+# Notes box layout / overflow
+# ---------------------------------------------------------
+# Notes that don't fit on the template's notes page continue onto blank
+# pages inserted directly after it, under "<Header> (continued)".
+NOTES_HEADER_H          = 34
+NOTES_HEADER_FONT       = "Helvetica-Bold"
+NOTES_HEADER_SIZE       = 18
+NOTES_FONT              = "Helvetica"
+NOTES_FONT_SIZE         = 12
+NOTES_LEADING           = 16
+NOTES_TEXT_INSET        = 10   # left/right padding inside the box
+NOTES_BODY_TOP_PAD      = 20   # header bottom edge to first text baseline
+NOTES_BODY_EXTRA        = 20   # body height = lines * leading + this
+NOTES_BOTTOM_MARGIN     = 36   # fallback limit if no footer is detected
+NOTES_CONT_TOP_MARGIN   = 72   # top margin on continuation pages
+NOTES_MIN_LINES         = 2    # avoid leaving a lone line at a page bottom
+PUBLIC_NOTES_MIN_BODY_H     = 60
+ASSESSMENT_NOTES_MIN_BODY_H = 140
+
+# ---------------------------------------------------------
+# Notes page footer (copied onto continuation pages)
+# ---------------------------------------------------------
+# The footer artwork (NNAS / SNEI logo) is taken from the bottom of the
+# template's notes page and stamped onto each continuation page. Anything
+# (images, drawings, text) found within FOOTER_SEARCH_H of the bottom edge
+# of that page is treated as footer.
+FOOTER_SEARCH_H   = 150   # how far up from the page bottom to look for the footer
+FOOTER_PAD        = 4     # padding around the detected footer area
+FOOTER_RENDER_DPI = 300   # resolution of the copied footer image
+FOOTER_GAP_ABOVE  = 4     # minimum gap between the notes boxes and the footer
+
 EVALUATOR_LABEL_X1 = 73.7
 DATE_LABEL_X1      = 431.1
 EVALUATOR_VALUE_X  = EVALUATOR_LABEL_X1 + 6
@@ -105,12 +138,48 @@ LOGO_FILENAME          = "Credential_header.png"
 
 CRED_REPORTS_SUBFOLDER = "Credential reports"
 
-# Sibling of CRED_REPORTS_SUBFOLDER at the application's root
-# (applications/<provider>/<reference_id>/). Reviewers may drop
-# supplementary files into subfolders here; their bare subfolder NAMES
-# (not the files inside, not dates) get listed as extra bullets under
-# Part C's "C4: Other Documents".
+# ---------------------------------------------------------
+# C4 ("Other Documents") SharePoint sources
+# ---------------------------------------------------------
+# C4 combines three sources (see build_payload_from_reviews):
+#   1. ECA reports from the Education Document Review task (accepted only).
+#   2. Every file in
+#        applications/<provider>/<reference_id>/Additional documents/Communications
+#      listed as "<filename> - Communication - <date uploaded>".
+#   3. Every file in
+#        applications/<provider>/<reference_id>/International Credentials
+#      whose filename contains TRANSLATION_KEYWORD, listed as
+#      "<filename> - Translation - <date uploaded>".
+# Sources 2 and 3 are read via Microsoft Graph. Other subfolders of
+# "Additional documents" are NOT listed.
 ADDITIONAL_DOCUMENTS_FOLDER_NAME = "Additional documents"
+COMMUNICATIONS_SUBFOLDER         = "Communications"
+
+# Middle segment of each Communications bullet.
+COMMUNICATION_LABEL = "Communication"
+
+# True also walks nested subfolders under Communications. False (default)
+# indexes only files directly inside Communications.
+COMMUNICATION_RECURSE = False
+
+# Number each Communications bullet ("1. 1.pdf - Communication - ...").
+# Off by default because the filenames are themselves numbered.
+COMMUNICATION_BULLETS_NUMBERED = False
+
+# Part C is supplementary; a Graph failure should not abort a whole
+# credential report delivery. Flip to True to make it hard-fail instead.
+FAIL_ON_COMMUNICATION_FETCH_ERROR = False
+
+INTERNATIONAL_CREDENTIALS_SUBFOLDER = "International Credentials"
+
+# Case-insensitive substring match against the filename.
+TRANSLATION_KEYWORD = "translation"
+
+# Middle segment of each translation bullet.
+TRANSLATION_LABEL = "Translation"
+
+# Same rationale as FAIL_ON_COMMUNICATION_FETCH_ERROR.
+FAIL_ON_TRANSLATION_FETCH_ERROR = False
 
 SP_MAX_WORKERS = 8
 
@@ -122,10 +191,10 @@ SP_MAX_WORKERS = 8
 _FOLDER_CONFLICT_GET_RETRIES       = 4
 _FOLDER_CONFLICT_GET_DELAY_SECONDS = 0.5
 
-PAGE_NOTES = 0   # Page 1  — cover / notes / metadata
-PAGE_A1    = 1   # Page 2  — A1 Personal Information
-PAGE_A2    = 2   # Page 3  — A2 Nursing Education Overview (full template only)
-PAGE_A3    = 3   # Page 4  — A3 Registration/License (first entry)
+PAGE_NOTES = 0   # Page 1  - cover / notes / metadata
+PAGE_A1    = 1   # Page 2  - A1 Personal Information
+PAGE_A2    = 2   # Page 3  - A2 Nursing Education Overview (full template only)
+PAGE_A3    = 3   # Page 4  - A3 Registration/License (first entry)
 
 TEMPLATE_FULL_BASE_PAGES = 7
 
@@ -454,6 +523,33 @@ def list_drive_children(path: str) -> List[Dict[str, Any]]:
 
     data = response.json()
     return data.get("value", [])
+
+def list_drive_children_by_id(item_id: str) -> List[Dict[str, Any]]:
+    """All children of a drive item by ID, following @odata.nextLink, with
+    the upload/modified timestamps needed for C4 dates."""
+    init_sharepoint_graph()
+    url = (
+        f"{GRAPH_BASE}/drives/{_SP_DRIVE_ID}/items/{item_id}/children"
+        "?$top=200&$select=id,name,file,folder,size,createdDateTime,lastModifiedDateTime"
+    )
+    out: List[Dict[str, Any]] = []
+    while url:
+        resp = requests.get(
+            url,
+            headers={"Authorization": f"Bearer {get_graph_token()}"},
+            timeout=120,
+        )
+        if resp.status_code != 200:
+            raise RuntimeError(
+                f"Microsoft Graph children listing failed.\n"
+                f"Item ID: {item_id}\n"
+                f"Status: {resp.status_code}\n"
+                f"Response body:\n{resp.text[:3000]}"
+            )
+        data = resp.json()
+        out.extend(data.get("value") or [])
+        url = data.get("@odata.nextLink")
+    return out
 
 def create_folder(parent_path: str, folder_name: str):
     """
@@ -790,90 +886,154 @@ def find_prior_report_local(search_dir: str) -> Optional[str]:
     return None
 
 # =========================================================
-# "ADDITIONAL DOCUMENTS" FOLDER SCAN -> C4
+# C4 SHAREPOINT SOURCES: COMMUNICATIONS + TRANSLATIONS
 # ---------------------------------------------------------
-# C4 ("Other Documents") is built ENTIRELY from this folder scan -- not
-# from any SMApply review task. ADDITIONAL_DOCUMENTS_FOLDER_NAME is a
-# sibling of CRED_REPORTS_SUBFOLDER at the application's root
-# (applications/<provider>/<reference_id>/). Reviewers organize ad hoc
-# supplementary material into named subfolders there (e.g. "Marriage
-# Certificate", "Court Order"), each of which may or may not actually
-# contain files. Per spec: step through each direct subfolder, and for
-# any subfolder that has files in it, list those files; subfolders with
-# no files inside contribute nothing (not even their own name).
+# Both are read from the application's root folder,
+# applications/<provider>/<reference_id> (the same folder used for the
+# prior-report lookup). See the "C4 ("Other Documents") SharePoint
+# sources" config block above for the exact paths and bullet formats.
 # =========================================================
 
-def list_additional_documents_files_by_subfolder(application_folder_path: str) -> List[str]:
-    """
-    Scan <application_folder_path>/Additional documents, step through
-    each direct subfolder, and for every subfolder that contains at
-    least one file, list those file names (each prefixed with its
-    subfolder name for context, e.g. "Marriage Certificate: scan.pdf").
-    Subfolders with no files inside are skipped entirely -- only actual
-    file content is surfaced, never a bare subfolder name.
+def _communications_folder_path(application_folder_path: str) -> str:
+    return (
+        f"{application_folder_path}/"
+        f"{ADDITIONAL_DOCUMENTS_FOLDER_NAME}/{COMMUNICATIONS_SUBFOLDER}"
+    )
 
-    Returns [] if "Additional documents" doesn't exist for this
-    application, has no subfolders, or none of its subfolders contain
-    any files -- or on any listing failure, since this is supplementary
-    content, not required for report generation.
+
+def _sp_uploaded_date(item: Dict[str, Any]) -> str:
+    """'Date uploaded' for a driveItem, formatted YYYY/MM/DD. createdDateTime is
+    the upload timestamp; lastModifiedDateTime is the fallback."""
+    for key in ("createdDateTime", "lastModifiedDateTime"):
+        v = item.get(key)
+        if v:
+            formatted = _fmt_review_date(v)
+            if formatted:
+                return formatted
+    return ""
+
+
+def collect_communication_bullets(application_folder_path: str) -> Tuple[List[str], Dict[str, Any]]:
+    """Index every file in <application folder>/Additional documents/
+    Communications and format each as:
+
+        "<filename> - Communication - <date uploaded>"
+
+    Every file is indexed regardless of extension. A missing upload date
+    omits the trailing segment. Returns (bullets, debug).
     """
-    root_path = f"{application_folder_path}/{ADDITIONAL_DOCUMENTS_FOLDER_NAME}"
-    try:
-        subfolders = list_drive_children(root_path)
-    except Exception:
-        return []
+    folder_path = _communications_folder_path(application_folder_path)
+    dbg: Dict[str, Any] = {
+        "folder_path":   _sp_url(folder_path),
+        "folder_found":  False,
+        "files_indexed": 0,
+        "folders_seen":  [],
+        "skipped":       [],
+    }
+
+    root = get_drive_item_by_path(folder_path)
+    if not root or "folder" not in root:
+        return [], dbg
+    dbg["folder_found"] = True
+
+    collected: List[Tuple[str, str]] = []
+    queue: List[Tuple[str, str]] = [(root["id"], "")]
+    seen_folders: Set[str] = set()
+
+    while queue:
+        item_id, rel = queue.pop(0)
+        if item_id in seen_folders:
+            continue
+        seen_folders.add(item_id)
+        dbg["folders_seen"].append(rel or COMMUNICATIONS_SUBFOLDER)
+
+        for child in list_drive_children_by_id(item_id):
+            name = safe_str(child.get("name"))
+            if "folder" in child:
+                if COMMUNICATION_RECURSE and child.get("id"):
+                    queue.append((child["id"], f"{rel}/{name}".strip("/")))
+                else:
+                    dbg["skipped"].append({"name": name, "reason": "folder"})
+                continue
+            if "file" not in child:
+                dbg["skipped"].append({"name": name, "reason": "not a file"})
+                continue
+            if not name:
+                dbg["skipped"].append({"id": child.get("id"), "reason": "no name"})
+                continue
+            collected.append((name, _sp_uploaded_date(child)))
+
+    # Stable ordering: oldest upload first, then filename.
+    collected.sort(key=lambda t: (t[1], t[0].lower()))
 
     bullets: List[str] = []
-    for item in sorted(subfolders, key=lambda it: str(it.get("name", "")).lower()):
-        if "folder" not in item:
-            continue   # ignore loose files sitting directly under "Additional documents"
-        subfolder_name = item.get("name", "").strip()
-        if not subfolder_name:
+    for i, (name, uploaded) in enumerate(collected, start=1):
+        head = f"{i}. {name}" if COMMUNICATION_BULLETS_NUMBERED else name
+        parts = [head, COMMUNICATION_LABEL]
+        if uploaded:
+            parts.append(uploaded)
+        bullets.append(" - ".join(parts))
+
+    dbg["files_indexed"] = len(bullets)
+    return bullets, dbg
+
+
+def collect_translation_bullets(application_folder_path: str) -> Tuple[List[str], Dict[str, Any]]:
+    """Index files in <application folder>/International Credentials whose
+    filename contains TRANSLATION_KEYWORD (case-insensitive) and format
+    each as:
+
+        "<filename> - Translation - <date uploaded>"
+
+    Files without the keyword (e.g. the ECA PDF) are skipped. Subfolders
+    are not searched. A missing upload date omits the trailing segment.
+    The SharePoint files themselves are never renamed or modified.
+    Returns (bullets, debug)."""
+    folder_path = f"{application_folder_path}/{INTERNATIONAL_CREDENTIALS_SUBFOLDER}"
+    dbg: Dict[str, Any] = {
+        "folder_path":   _sp_url(folder_path),
+        "folder_found":  False,
+        "files_indexed": 0,
+        "matched":       [],
+        "skipped":       [],
+    }
+
+    root = get_drive_item_by_path(folder_path)
+    if not root or "folder" not in root:
+        return [], dbg
+    dbg["folder_found"] = True
+
+    collected: List[Tuple[str, str]] = []   # (uploaded YYYY/MM/DD, filename)
+    for child in list_drive_children_by_id(root["id"]):
+        name = safe_str(child.get("name"))
+        if "folder" in child:
+            dbg["skipped"].append({"name": name, "reason": "folder"})
             continue
+        if "file" not in child:
+            dbg["skipped"].append({"name": name, "reason": "not a file"})
+            continue
+        if not name:
+            dbg["skipped"].append({"id": child.get("id"), "reason": "no name"})
+            continue
+        if TRANSLATION_KEYWORD.lower() not in name.lower():
+            dbg["skipped"].append({"name": name, "reason": "no keyword"})
+            continue
+        collected.append((_sp_uploaded_date(child), name))
 
-        subfolder_path = f"{root_path}/{subfolder_name}"
-        try:
-            children = list_drive_children(subfolder_path)
-        except Exception:
-            continue   # unreadable subfolder -- skip rather than fail the whole report
+    # Stable ordering: oldest upload first, then filename.
+    collected.sort(key=lambda t: (t[0], t[1].lower()))
 
-        file_names = sorted(
-            (
-                child.get("name", "").strip()
-                for child in children
-                if "folder" not in child and child.get("name", "").strip()
-            ),
-            key=str.lower,
-        )
-        for fname in file_names:
-            bullets.append(f"{subfolder_name}: {fname}")
+    bullets: List[str] = []
+    for uploaded, name in collected:
+        parts = [name, TRANSLATION_LABEL]
+        if uploaded:
+            parts.append(uploaded)
+        bullets.append(" - ".join(parts))
+        dbg["matched"].append(name)
 
-    return bullets
+    dbg["files_indexed"] = len(bullets)
+    return bullets, dbg
 
-
-def apply_c4_additional_documents_files(payload: Dict[str, Any],
-                                        file_bullets: List[str]) -> Dict[str, Any]:
-    """
-    Set payload's C4 section to the given "Additional documents" file
-    bullets (creating the section if none exists yet). Mutates and
-    returns `payload`. No-op if `file_bullets` is empty -- C4 simply
-    doesn't appear in that case, same as before this change.
-    """
-    if not file_bullets:
-        return payload
-
-    sections = payload.get("part_c_sections") or []
-    c4_section = next(
-        (s for s in sections if str(s.get("header", "")).startswith("C4")),
-        None,
-    )
-    if c4_section is None:
-        c4_section = {"header": "C4: Other Documents", "bullets": []}
-        sections.append(c4_section)
-    c4_section["bullets"] = list(file_bullets)
-
-    payload["part_c_sections"] = sections
-    return payload
 
 # =========================================================
 # SMAPPLY HELPERS
@@ -955,7 +1115,7 @@ def fetch_all_reviews(application_id: int, program_id: int) -> List[Dict[str, An
     pagination via the `next` link. Returns a flat list of review dicts.
 
     Called once per run in main() and reused both by
-    build_payload_from_reviews (registration/identity/notes) and
+    build_payload_from_reviews (registration/identity/notes/C4) and
     parse_manual_education_from_reviews (education fallback), so a single
     application never triggers more than one reviews fetch.
     """
@@ -978,12 +1138,11 @@ def fetch_all_reviews(application_id: int, program_id: int) -> List[Dict[str, An
     return out
 
 # ---------------------------------------------------------
-# RESTORED FROM SCRIPT 1: clear existing files on the SMApply upload
-# task before re-uploading. The .../tasks/{id}/files/ collection forbids
-# GET, so files are read from the task detail. Called ONCE per delivery
-# (before the per-RB upload loop in main()), because every RB uploads to
-# the same task; clearing per-upload would delete files uploaded by
-# earlier RBs in the same run.
+# Clear existing files on the SMApply upload task before re-uploading.
+# The .../tasks/{id}/files/ collection forbids GET, so files are read from
+# the task detail. Called ONCE per delivery (before the per-RB upload loop
+# in main()), because every RB uploads to the same task; clearing
+# per-upload would delete files uploaded by earlier RBs in the same run.
 # ---------------------------------------------------------
 
 _SMAPPLY_FILE_SIGNATURE_KEYS = {
@@ -1071,14 +1230,13 @@ def clear_smapply_task_files(appid, task_id) -> Dict[str, Any]:
 # =========================================================
 # SMAPPLY REVIEWS -> PAYLOAD ADAPTER
 # ---------------------------------------------------------
-# Builds registration, identity (C1), and assessment-notes data straight
-# from live SMApply review responses, replacing what additional_content
-# used to supply for these sections (personal_info and application_info
-# still come from additional_content, since reviews don't carry them).
-# Education (A2/B1) is handled separately: prior-report PDF first, this
-# same fetched review list as a fallback (see parse_manual_education_
-# from_reviews) -- education keeps its two-step lookup rather than
-# switching to reviews-only, per current design.
+# Builds registration (A3 + C3), identity (C1), other documents (C4) and
+# assessment-notes data straight from live SMApply review responses
+# (plus SharePoint for the C4 Communications / Translations lines).
+# personal_info and application_info still come from additional_content,
+# since reviews don't carry them. Education (A2/B1) is handled
+# separately: prior-report PDF first, this same fetched review list as a
+# fallback (see parse_manual_education_from_reviews).
 # =========================================================
 
 # Review tasks are matched by NAME (normalized), not by hardcoded task id,
@@ -1102,23 +1260,50 @@ TASK_NAME_NOTES        = "assessment notes"
 LIFETIME_FLAG_MAP   = {0: "Yes", 1: "No"}   # SMApply choice order [Yes, No] -> index 1 = No
 DISCIPLINE_FLAG_MAP = {0: "Yes", 1: "No"}   # SMApply choice order [Yes, No] -> index 1 = No
 
-# ---------------------------------------------------------
-# RESTORED FROM SCRIPT 1: only documents with Document Status == 4
-# (accepted) are kept (registration and education). Blocks with any
-# other status value (e.g. Waived, Rejected) are dropped; blocks with no
-# Document Status field are kept (don't drop on missing data). This is
-# IN ADDITION TO the "Add another?" stop-gating below -- both gates must
-# pass for a block to survive.
+# -----------------------------------------------------------------
+# Document Status gate. Only documents with Document Status == 4
+# ("Meets Requirements") become A3 registration tables and C4 ECA lines.
+# Blocks with any other status value (e.g. 5 = Waived) are excluded from
+# those; blocks with no Document Status field are kept (don't drop on
+# missing data).
 #
-# !!! VERIFY BEFORE TRUSTING !!! same caveat as the yes/no maps above:
-# confirm the reviews API actually returns Document Status as an integer
-# choice-index (with 4 == "Meets Requirements"/accepted) rather than a
-# string label, before relying on this in production. If it comes back
-# as a non-numeric string, _status_accepted() currently fails open
-# (keeps the block) rather than silently dropping good data.
+# C3 is NOT gated by status: it is a document inventory, so every
+# submitted registration document is listed there, accepted or waived,
+# tagged with its Category Entry label.
+#
+# This is IN ADDITION TO the "Add another?" stop-gating below, which
+# applies to both A3 and C3.
+#
+# !!! VERIFY BEFORE TRUSTING !!! confirm the reviews API returns Document
+# Status as an integer choice-index (4 == "Meets Requirements") rather
+# than a string label. If it comes back as a non-numeric string,
+# _status_accepted() fails open (keeps the block), so a waived document
+# would also get an A3 table.
 # -----------------------------------------------------------------
 FILTER_BY_STATUS         = True
 ACCEPTED_DOCUMENT_STATUS = {4}
+
+# Registration Document Review "Category Entry" choice-index -> label.
+# Confirmed against the SMApply question configuration (0-indexed, in the
+# order the choices appear in the task builder). Shown in brackets at the
+# end of each C3 line.
+REGISTRATION_CATEGORY_MAP: Dict[int, str] = {
+    0: "Certificate",
+    1: "Nursing Registration Form",
+    2: "Verification/Validation Document",
+    3: "Registration Other Document",
+    4: "Registration Letter",
+}
+
+
+def _registration_category_label(cat_index: Any) -> str:
+    if cat_index is None or cat_index == "":
+        return ""
+    try:
+        idx = int(cat_index)
+    except (TypeError, ValueError):
+        return ""
+    return REGISTRATION_CATEGORY_MAP.get(idx, "")
 
 
 def _status_accepted(bm: Dict[str, Any]) -> bool:
@@ -1151,11 +1336,11 @@ def _split_blocks(responses: List[dict], sentinel_prefix: str) -> List[Tuple[Lis
     """Segment a task's flat responses list into per-document blocks on the
     'Add another ...' delimiter.
 
-    RESTORED FROM SCRIPT 1: returns (block_fields, terminator_value) per
-    block, where terminator_value is the answer to the 'Add another ...?'
-    question that closed the block (None for the final, unterminated
-    block). The terminator is used by _is_stop() below to gate ingestion
-    of the block that immediately follows.
+    Returns (block_fields, terminator_value) per block, where
+    terminator_value is the answer to the 'Add another ...?' question that
+    closed the block (None for the final, unterminated block). The
+    terminator is used by _is_stop() below to gate ingestion of the block
+    that immediately follows.
     """
     sp = _nl(sentinel_prefix)
     blocks: List[Tuple[List[Tuple[str, Any]], Any]] = []
@@ -1204,11 +1389,10 @@ def _map_yesno(v: Any, m: Dict[int, str]) -> str:
 
 
 def _is_stop(add_another: Any) -> bool:
-    """RESTORED FROM SCRIPT 1: 'Add another ...?' answered No -> the block
-    that immediately follows is dropped. No is choice index 1
-    ([Yes, No]); also tolerate string forms. NOTE: this gates only the
-    NEXT block, not the rest of the list. A later Yes re-enables ingestion
-    (skip-and-resume)."""
+    """'Add another ...?' answered No -> the block that immediately follows
+    is dropped. No is choice index 1 ([Yes, No]); also tolerate string
+    forms. NOTE: this gates only the NEXT block, not the rest of the list.
+    A later Yes re-enables ingestion (skip-and-resume)."""
     if add_another is None or add_another == "":
         return False
     try:
@@ -1248,11 +1432,16 @@ def _get_prior_report_flag(reviews: List[Dict[str, Any]]) -> Optional[str]:
 
 
 def build_payload_from_reviews(reviews: List[Dict[str, Any]],
-                               base_payload: Dict[str, Any]) -> Tuple[Dict[str, Any], Dict[str, Any]]:
+                               base_payload: Dict[str, Any],
+                               application_folder_path: str = "") -> Tuple[Dict[str, Any], Dict[str, Any]]:
     """Build the render `payload` from already-fetched SMApply reviews.
 
     `base_payload` is the parsed additional_content, used ONLY for
     personal_info and application_info (which reviews do not carry).
+
+    `application_folder_path` is applications/<provider>/<reference_id>.
+    It is needed to read the C4 Communications and Translations files
+    from SharePoint; if empty, those two C4 sources are skipped.
 
     Returns (payload, review_debug).
     """
@@ -1266,11 +1455,24 @@ def build_payload_from_reviews(reviews: List[Dict[str, Any]],
         "part_c_sections":  [],
     }
 
-    # ---- Registration Document Review -> registration.entry_N + C3 ----
-    # RESTORED FROM SCRIPT 1: "Add another registration?" stop-gating
-    # (prev_allows / _is_stop) AND Document Status filtering
-    # (_status_accepted) are both applied here. A block is kept only if
-    # it passes BOTH gates.
+    # ---- Registration Document Review -> A3 (registration.entry_N) + C3 ----
+    #
+    # Both A3 and C3 apply the "Add another registration?" stop-gating
+    # (prev_allows / _is_stop) and skip empty blocks. After that:
+    #   - C3 lists EVERY remaining document, accepted or waived, with its
+    #     Category Entry label (Certificate, Nursing Registration Form, ...).
+    #   - A3 only gets a table for documents with Document Status == 4.
+    #
+    # Two dependent-field corrections are applied to the A3 values. They
+    # change only what appears on the report and never write back to
+    # SMApply:
+    #   1. "Date registration/license expired/expires" is blanked whenever
+    #      "Lifetime practice registration/license" resolves to "Yes", so a
+    #      stale expiry date left behind after the lifetime flag was
+    #      changed doesn't render next to "Yes".
+    #   2. "Language of examination" is blanked whenever "Method by which
+    #      this applicant was registered" is anything other than
+    #      "Examination", since it only applies in that case.
     reg_rv = by.get(TASK_NAME_REGISTRATION)
     c3_bullets: List[str] = []
     if reg_rv:
@@ -1289,8 +1491,31 @@ def build_payload_from_reviews(reviews: List[Dict[str, Any]],
             num   = safe_str(_get(bm, "Registration/license number"))
             if not (board or num):          # empty / abandoned block
                 continue
-            if not _status_accepted(bm):    # keep only Document Status == 4
+
+            # C3: list this document regardless of accepted/waived status.
+            recv      = _fmt_review_date(_get(bm, "Document Received Date"))
+            cat_label = _registration_category_label(_get(bm, "Category Entry"))
+            line = board or ""
+            if num:       line = f"{line}: {num}" if line else num
+            if recv:      line = f"{line} - {recv}" if line else recv
+            if cat_label: line = f"{line} ({cat_label})"
+            if line: c3_bullets.append(line)
+
+            # A3: only accepted documents (Document Status == 4).
+            if not _status_accepted(bm):
                 continue
+
+            # Correction 1: lifetime flag gates expiry date.
+            lifetime_flag = _map_yesno(_get(bm, "Lifetime practice registration/license"), LIFETIME_FLAG_MAP)
+            expiry_date   = _fmt_review_date(_get(bm, "Date license/registration expired/expires"))
+            if lifetime_flag == "Yes":
+                expiry_date = ""
+
+            # Correction 2: registration method gates exam language.
+            registration_method = safe_str(_get(bm, "Method by which this applicant was registered"))
+            exam_language       = safe_str(_get(bm, "Language of examination"))
+            if registration_method.strip().lower() != "examination":
+                exam_language = ""
 
             i += 1
             payload["registration"][f"entry_{i}"] = {
@@ -1299,23 +1524,17 @@ def build_payload_from_reviews(reviews: List[Dict[str, Any]],
                 f"sa_registrant_name_issued_{i}":       safe_str(_get(bm, "Applicant Name when registered/licensed")),
                 f"sa_registration_title_{i}":           safe_str(_get(bm, "Title of registration/license")),
                 f"sa_registration_number_{i}":          num,
-                f"sa_registration_method_{i}":          safe_str(_get(bm, "Method by which this applicant was registered")),
-                f"sa_exam_language_{i}":                safe_str(_get(bm, "Language of examination")),
+                f"sa_registration_method_{i}":          registration_method,
+                f"sa_exam_language_{i}":                exam_language,
                 f"sa_registration_issued_date_{i}":     _fmt_review_date(_get(bm, "Date registration/license was issued")),
-                f"sa_registration_lifetime_flag_{i}":   _map_yesno(_get(bm, "Lifetime practice registration/license"), LIFETIME_FLAG_MAP),
-                f"sa_registration_expiry_date_{i}":     _fmt_review_date(_get(bm, "Date license/registration expired/expires")),
+                f"sa_registration_lifetime_flag_{i}":   lifetime_flag,
+                f"sa_registration_expiry_date_{i}":     expiry_date,
                 f"sa_registration_status_{i}":          safe_str(_get(bm, "Status of license/registration")),
                 f"sa_registration_discipline_flag_{i}": _map_yesno(_get(bm, "Has the license/registration ever been suspended"), DISCIPLINE_FLAG_MAP),
             }
-            recv = _fmt_review_date(_get(bm, "Document Received Date"))
-            line = board or ""
-            if num:  line = f"{line}: {num}" if line else num
-            if recv: line = f"{line} - {recv}" if line else recv
-            if line: c3_bullets.append(line)
 
     # ---- Identity Document Review -> C1 ----
-    # (Script 1 did not apply stop-gating or status filtering to identity
-    # documents either, so that behavior is preserved unchanged here.)
+    # (No stop-gating or status filtering for identity documents.)
     id_rv = by.get(TASK_NAME_IDENTITY)
     c1_bullets: List[str] = []
     if id_rv:
@@ -1330,16 +1549,66 @@ def build_payload_from_reviews(reviews: List[Dict[str, Any]],
             if parts:
                 c1_bullets.append(" - ".join(parts))
 
-    # ---- C4 no longer comes from the "Education Document Review" task
-    # ---- at all: it's now built purely from the "Additional documents"
-    # ---- SharePoint folder in main() via
-    # ---- list_additional_documents_files_by_subfolder() /
-    # ---- apply_c4_additional_documents_files(). Nothing to build here.
+    # ---- Education Document Review -> C4 (ECA reports) ----
+    # Stop-gated like registration, and only accepted documents
+    # (Document Status == 4) are listed.
+    ed_rv = by.get(TASK_NAME_EDUCATION)
+    c4_bullets: List[str] = []
+    eca_count = 0
+    if ed_rv:
+        prev_allows = True   # first block is always eligible
+        for block, add_another in _split_blocks(ed_rv.get("responses"), "add another education"):
+            allowed = prev_allows
+            prev_allows = not _is_stop(add_another)   # gates ONLY the next block
+            if not allowed:
+                continue
+
+            bm = _bmap(block)
+            eca  = safe_str(_get(bm, "ECA ID"))
+            recv = _fmt_review_date(_get(bm, "Document Received Date"))
+            if not (eca or recv):          # empty / abandoned block
+                continue
+            if not _status_accepted(bm):    # keep only Document Status == 4
+                continue
+
+            line = "ECA Report"
+            if eca:  line = f"{line} ({eca})"
+            if recv: line = f"{line} - {recv}"
+            c4_bullets.append(line)
+            eca_count += 1
+
+    # ---- Additional documents / Communications -> C4 ----
+    comm_dbg: Dict[str, Any] = {}
+    if application_folder_path:
+        try:
+            comm_bullets, comm_dbg = collect_communication_bullets(application_folder_path)
+            c4_bullets.extend(comm_bullets)
+        except Exception as exc:
+            comm_dbg = {"fatal_error": str(exc)[:1000]}
+            if FAIL_ON_COMMUNICATION_FETCH_ERROR:
+                raise
+    else:
+        comm_dbg = {"skipped": "no application_folder_path supplied"}
+
+    # ---- International Credentials / Translations -> C4 ----
+    trans_dbg: Dict[str, Any] = {}
+    if application_folder_path:
+        try:
+            trans_bullets, trans_dbg = collect_translation_bullets(application_folder_path)
+            c4_bullets.extend(trans_bullets)
+        except Exception as exc:
+            trans_dbg = {"fatal_error": str(exc)[:1000]}
+            if FAIL_ON_TRANSLATION_FETCH_ERROR:
+                raise
+    else:
+        trans_dbg = {"skipped": "no application_folder_path supplied"}
 
     if c1_bullets:
         payload["part_c_sections"].append({"header": "C1: Identity Documents", "bullets": c1_bullets})
     if c3_bullets:
         payload["part_c_sections"].append({"header": "C3: Nursing Registration/License Documents", "bullets": c3_bullets})
+    if c4_bullets:
+        payload["part_c_sections"].append({"header": "C4: Other Documents", "bullets": c4_bullets})
 
     # ---- Assessment Notes ----
     n_rv = by.get(TASK_NAME_NOTES)
@@ -1358,12 +1627,17 @@ def build_payload_from_reviews(reviews: List[Dict[str, Any]],
         "review_task_names":    [ (rv.get("task") or {}).get("name") for rv in reviews ],
         "matched_registration": reg_rv is not None,
         "matched_identity":     id_rv is not None,
-        "matched_education":    by.get(TASK_NAME_EDUCATION) is not None,
+        "matched_education":    ed_rv is not None,
         "matched_notes":        n_rv is not None,
         "registration_entries": len(payload["registration"]),
+        "c3_documents":         len(c3_bullets),
+        "c4_eca_reports":       eca_count,
         "part_c_headers":       [s.get("header") for s in payload["part_c_sections"]],
+        "communications":       comm_dbg,
+        "translations":         trans_dbg,
     }
     return payload, review_dbg
+
 
 # =========================================================
 # CORE PDF HELPERS
@@ -1781,7 +2055,7 @@ def build_part_c_sections(payload: Dict[str, Any]) -> List[Dict[str, Any]]:
     return sections
 
 # =========================================================
-# PRIOR REPORT EXTRACTION  (pdfplumber — text-based, no OCR)
+# PRIOR REPORT EXTRACTION  (pdfplumber - text-based, no OCR)
 #
 # A2 and B1 are located by scanning every page for their section header
 # text rather than relying on a hardcoded page number.
@@ -1844,7 +2118,7 @@ def _a2_key(raw: Dict[str, str], *fragments: str) -> str:
     return ""
 
 # =========================================================
-# PRIOR REPORT EXTRACTION — MULTI-PROGRAM SEGMENTATION
+# PRIOR REPORT EXTRACTION - MULTI-PROGRAM SEGMENTATION
 # ---------------------------------------------------------
 # Some prior reports append multiple A2/B1 program blocks directly one
 # after another (no intervening "Part C" or other section marker), e.g.
@@ -1866,7 +2140,7 @@ def _extract_a2_raw_rows(pdf) -> List[Tuple[str, str]]:
     Collect every (label, value) row across all A2 pages, in document
     order, starting at the first page whose text matches _A2_PATTERN and
     continuing until a page's text matches _B1_PATTERN (that page's
-    tables are NOT included — B1 extraction picks up from there).
+    tables are NOT included - B1 extraction picks up from there).
     """
     collecting = False
     rows: List[Tuple[str, str]] = []
@@ -2045,23 +2319,17 @@ def extract_nnas_education(pdf_path: str) -> Dict[str, Any]:
 # ---------------------------------------------------------
 # The vendor still submits a full, multi-line "Nursing Education
 # Documents" list (diplomas, nursing education forms, transcripts, etc,
-# each with its own received date) inside the prior report's Part C,
-# even though the live-review pipeline (build_payload_from_reviews) now
-# follows a narrower "one accepted document" convention for
-# registration and education document metadata. That narrower
-# convention exists ONLY because the live SMApply reviews carry a
-# Document Status field to filter on (see _status_accepted); the prior
-# report's Part C is static, already-rendered text with no structured
-# status data behind it, so there's no reliable way to pick "the one
-# that matters" out of it. Per team decision, this section is therefore
-# ported forward from the prior report VERBATIM (all lines, not
-# filtered to one), rather than being trimmed to match the newer
-# one-document convention used elsewhere in this report.
+# each with its own received date) inside the prior report's Part C.
+# The prior report's Part C is static, already-rendered text with no
+# structured status data behind it, so there's no reliable way to pick
+# "the one that matters" out of it. Per team decision, this section is
+# therefore ported forward from the prior report VERBATIM (all lines,
+# not filtered).
 #
 # In THIS report's Part C numbering it is filed as "C2: Nursing
 # Education Documents". The review-derived sections already come out as
 # C1 (Identity), C3 (Registration), C4 (Other) -- that adapter never
-# produced a C2 -- so the ported section slots in without needing to
+# produces a C2 -- so the ported section slots in without needing to
 # renumber anything else. The detection pattern below matches
 # "C<any digit>: Nursing Education Documents" rather than hardcoding a
 # number, since an older prior report may have filed this same section
@@ -2162,17 +2430,17 @@ def apply_part_c_education_documents(payload: Dict[str, Any],
                                      prior_pdf_path: Optional[str]) -> Dict[str, Any]:
     """
     Insert a "C2: Nursing Education Documents" section (ported verbatim
-    from the prior report, when one is available) right after C1 in
-    payload["part_c_sections"]. Mutates and returns `payload`.
-
-    No renumbering of the existing review-derived sections is needed:
-    build_payload_from_reviews already labels them C1 (Identity), C3
-    (Registration), C4 (Other) -- it never produced a C2 -- so C2 slots
-    in cleanly on its own.
+    from the prior report, when one is available) into
+    payload["part_c_sections"], directly before the first section
+    numbered higher than C2 (C3 or C4), or at the end if there is none.
+    Placing it by number keeps the order C1, C2, C3, C4 even when C1 is
+    missing (previously it was placed "after C1", which put it at the
+    end, after C3 and C4, whenever there was no C1). Mutates and returns
+    `payload`.
 
     If no prior report is available, or it has no education-documents
     section, no C2 entry is added -- the report simply omits that
-    section, same as before this change.
+    section.
     """
     sections = payload.get("part_c_sections") or []
 
@@ -2181,8 +2449,9 @@ def apply_part_c_education_documents(payload: Dict[str, Any],
     if education_bullets:
         insert_at = len(sections)
         for idx, sec in enumerate(sections):
-            if str(sec.get("header", "")).startswith("C1"):
-                insert_at = idx + 1
+            m = re.match(r"\s*C(\d+)", str(sec.get("header", "")))
+            if m and int(m.group(1)) > 2:
+                insert_at = idx
                 break
         sections.insert(insert_at, {
             "header":  "C2: Nursing Education Documents",
@@ -2272,7 +2541,7 @@ def parse_manual_education_from_reviews(reviews: List[Dict[str, Any]]) -> Dict[s
     [theory, sim/lab, clinical]). Walks sections in order, stopping after
     the first section whose "Add another..." flag != 0.
 
-    Returns {"programs": [{"a2": {...}, "b1": [...]}, ...]} — every
+    Returns {"programs": [{"a2": {...}, "b1": [...]}, ...]} - every
     subject row is always included (blank values rendered as "---" by
     _b1_display downstream), and every non-blank section is kept, per
     spec: reviewers may fill in up to 5 education programs.
@@ -2757,33 +3026,125 @@ def normalize_education_programs(education_data: Optional[Dict[str, Any]]) -> Li
 
 # =========================================================
 # PDF - PAGE 1: NOTES + METADATA
+# ---------------------------------------------------------
+# Notes are laid out BEFORE anything is drawn. layout_notes() fills the
+# template's notes page down to the bottom limit (just above the footer
+# artwork); anything that doesn't fit is carried onto continuation pages
+# (blank pages inserted directly after the notes page in populate_pdf),
+# with the box header shown as "<Header> (continued)" and the template's
+# footer copied onto each one. Previously the boxes simply grew past the
+# bottom of the page and the overflow was cut off.
 # =========================================================
 
-def draw_wrapped_text(c, text, *, x, y_top, w, font="Helvetica", size=12, leading=16):
-    c.setFont(font, size)
-    lines = wrap_lines(text, font, size, w)
-    y = y_top
-    for line in lines:
-        c.drawString(x, y, line)
-        y -= leading
+def notes_first_top(page_h: float) -> float:
+    """Top edge of the first notes box on the template's notes page."""
+    return (page_h * 0.65) - 108 - 72 + HALF_INCH
 
-def draw_notes_section(c, *, x, y_top, w, header_text, body_text,
-                       header_height=34, body_height=120):
-    total_height = header_height + body_height
-    y_bottom     = y_top - total_height
-    c.setStrokeColor(colors.black); c.setLineWidth(2)
-    c.rect(x, y_bottom, w, total_height, fill=0, stroke=1)
-    c.setFillColor(COLOR_HEADER_BG)
-    c.rect(x, y_top - header_height, w, header_height, fill=1, stroke=0)
-    c.setFillColor(COLOR_RED); c.setFont("Helvetica-Bold", 18)
-    c.drawCentredString(x + w / 2, y_top - header_height + 10, header_text)
-    c.setStrokeColor(colors.black); c.setLineWidth(1)
-    c.line(x, y_top - header_height, x + w, y_top - header_height)
-    c.setFillColor(colors.black)
-    draw_wrapped_text(c, body_text, x=x + 10, y_top=y_top - header_height - 20,
-                      w=w - 20, font="Helvetica", size=12, leading=16)
 
-def render_assessment_notes_page1(c, payload, page_h, app_info: Dict[str, str]):
+_FOOTER_CACHE: Dict[str, Optional[Dict[str, Any]]] = {}
+_FOOTER_LOCK = threading.Lock()
+
+
+def extract_notes_footer(template_path: str) -> Optional[Dict[str, Any]]:
+    """Copies the footer area from the template's notes page as a PNG.
+
+    Returns {"png", "x", "y", "w", "h"} in PDF points (bottom-left origin),
+    or None if no footer content is found. The footer is rasterised (rather
+    than copying the template page's vector content) so that none of the
+    template page's other text ends up hidden on the continuation page.
+
+    Requires PyMuPDF (the "pymupdf" requirement). If it isn't available, or
+    anything goes wrong, this returns None: continuation pages are then
+    created without a footer and the notes stop at NOTES_BOTTOM_MARGIN.
+    Cached per template path, since populate_pdf() runs once per
+    regulatory body and two different templates (Base / Full) can be used.
+    """
+    with _FOOTER_LOCK:
+        if template_path in _FOOTER_CACHE:
+            return _FOOTER_CACHE[template_path]
+
+        result: Optional[Dict[str, Any]] = None
+        try:
+            try:
+                import pymupdf as fitz   # newer PyMuPDF releases
+            except ImportError:
+                import fitz              # older PyMuPDF releases
+
+            doc = fitz.open(template_path)
+            try:
+                if PAGE_NOTES < len(doc):
+                    page = doc[PAGE_NOTES]
+                    pr   = page.rect                      # top-left origin
+                    band_top = pr.y1 - FOOTER_SEARCH_H
+
+                    # The footer logo is an image, so images are used first.
+                    # Drawings and text are only used if no image is found,
+                    # because templates often contain invisible or white
+                    # shapes (and stray text) low on the page that would make
+                    # the footer area, and the notes limit, far too tall.
+                    boxes = []
+                    for info in page.get_image_info():
+                        r = fitz.Rect(info["bbox"])
+                        if not r.is_empty and r.y0 >= band_top:
+                            boxes.append(r)
+
+                    if not boxes:
+                        def _visible(col):
+                            return col is not None and any(v < 0.95 for v in col)
+                        for d in page.get_drawings():
+                            r = fitz.Rect(d["rect"])
+                            if r.is_empty or r.y0 < band_top:
+                                continue
+                            if _visible(d.get("fill")) or _visible(d.get("color")):
+                                boxes.append(r)
+                        for b in page.get_text("blocks"):
+                            r = fitz.Rect(b[:4])
+                            if not r.is_empty and r.y0 >= band_top and str(b[4]).strip():
+                                boxes.append(r)
+
+                    if boxes:
+                        clip = fitz.Rect(boxes[0])
+                        for r in boxes[1:]:
+                            clip |= r
+                        clip = fitz.Rect(clip.x0 - FOOTER_PAD, clip.y0 - FOOTER_PAD,
+                                         clip.x1 + FOOTER_PAD, clip.y1 + FOOTER_PAD) & pr
+                        if not clip.is_empty:
+                            pix = page.get_pixmap(clip=clip, dpi=FOOTER_RENDER_DPI, alpha=False)
+                            result = {
+                                "png": pix.tobytes("png"),
+                                "x":   clip.x0,
+                                "y":   pr.y1 - clip.y1,   # convert to bottom-left origin
+                                "w":   clip.width,
+                                "h":   clip.height,
+                            }
+            finally:
+                doc.close()
+        except Exception:
+            result = None
+
+        _FOOTER_CACHE[template_path] = result
+        return result
+
+
+def notes_bottom_limit(footer: Optional[Dict[str, Any]]) -> float:
+    """Lowest point a notes box may reach: the fixed bottom margin, or just
+    above the footer artwork if that sits higher."""
+    if not footer:
+        return NOTES_BOTTOM_MARGIN
+    return max(NOTES_BOTTOM_MARGIN, footer["y"] + footer["h"] + FOOTER_GAP_ABOVE)
+
+
+def draw_notes_footer(c, footer: Optional[Dict[str, Any]]):
+    if not footer:
+        return
+    c.drawImage(ImageReader(BytesIO(footer["png"])),
+                footer["x"], footer["y"], width=footer["w"], height=footer["h"])
+
+
+def collect_notes_text(payload: Dict[str, Any]) -> Tuple[str, str]:
+    """Returns (public_text, assessment_text). The section notes (ID /
+    Education / Registration) are appended to the public note. Shared by
+    the PDF and the DOCX so both show exactly the same notes text."""
     notes             = payload.get("assessment_notes") or {}
     base_public       = safe_str(notes.get("public"))
     identity_note     = safe_str(notes.get("identity_section_note"))
@@ -2801,14 +3162,143 @@ def render_assessment_notes_page1(c, payload, page_h, app_info: Dict[str, str]):
     appended        = "\n".join(section_lines)
     public_text     = "\n\n".join(p for p in [base_public, appended] if p)
     assessment_text = safe_str(notes.get("assessment"))
+    return public_text, assessment_text
 
+
+def layout_notes(sections, first_top: float, cont_top: float,
+                 bottom: float) -> List[List[Tuple[float, str, List[str], float]]]:
+    """
+    sections: list of (header, wrapped_lines, min_body_h)
+
+    Returns a list of pages. pages[0] is the template notes page, pages[1:]
+    are continuation pages. Each page is a list of placements:
+        (y_top, header_text, lines, body_h)
+    """
+    pages: List[List[Tuple[float, str, List[str], float]]] = [[]]
+    y = first_top
+
+    for header, lines, min_body_h in sections:
+        start, part = 0, 0
+        while start < len(lines):
+            # Don't open a continued box with blank lines.
+            if part > 0:
+                while start < len(lines) and not lines[start].strip():
+                    start += 1
+                if start >= len(lines):
+                    break
+
+            remaining = len(lines) - start
+            usable    = y - bottom - NOTES_HEADER_H - NOTES_BODY_EXTRA
+            fit       = max(0, int(usable // NOTES_LEADING))
+            need      = min(remaining, NOTES_MIN_LINES)
+
+            # Not enough room left here: start a new continuation page, unless
+            # we're already at the top of an empty continuation page.
+            on_empty_cont_page = len(pages) > 1 and not pages[-1]
+            if fit < need and not on_empty_cont_page:
+                pages.append([])
+                y = cont_top
+                continue
+
+            take   = min(max(fit, 1), remaining)
+            chunk  = lines[start:start + take]
+            body_h = len(chunk) * NOTES_LEADING + NOTES_BODY_EXTRA
+
+            # When the whole note fits in one box, keep the original minimum
+            # box height, but never extend past the bottom margin.
+            if part == 0 and take == remaining:
+                body_h = max(body_h, min(min_body_h, y - bottom - NOTES_HEADER_H))
+
+            # A box that continues on the next page extends to the bottom limit,
+            # so it sits right above the footer instead of stopping at its last line.
+            if take < remaining:
+                body_h = y - bottom - NOTES_HEADER_H
+
+            title = header if part == 0 else f"{header} (continued)"
+            pages[-1].append((y, title, chunk, body_h))
+
+            y     -= NOTES_HEADER_H + body_h + GAP_BETWEEN_NOTE_BOXES
+            start += take
+            part  += 1
+
+    return pages
+
+
+def build_notes_pages(payload: Dict[str, Any], page_h: float,
+                      bottom: float = NOTES_BOTTOM_MARGIN):
+    public_text, assessment_text = collect_notes_text(payload)
+    wrap_w = NOTES_SECTION_W - 2 * NOTES_TEXT_INSET
+
+    sections = []
+    if public_text:
+        sections.append((
+            "Public Assessment Notes",
+            wrap_lines(public_text, NOTES_FONT, NOTES_FONT_SIZE, wrap_w),
+            PUBLIC_NOTES_MIN_BODY_H,
+        ))
+    if assessment_text:
+        sections.append((
+            "Assessment Notes",
+            wrap_lines(assessment_text, NOTES_FONT, NOTES_FONT_SIZE, wrap_w),
+            ASSESSMENT_NOTES_MIN_BODY_H,
+        ))
+
+    if not sections:
+        return [[]]
+
+    return layout_notes(
+        sections,
+        first_top=notes_first_top(page_h),
+        cont_top=page_h - NOTES_CONT_TOP_MARGIN,
+        bottom=bottom,
+    )
+
+
+def draw_notes_box(c, *, x, y_top, w, header_text, lines, body_height,
+                   header_height=NOTES_HEADER_H):
+    """Draws one notes box from pre-wrapped lines (same look as the previous
+    draw_notes_section)."""
+    total_height = header_height + body_height
+    y_bottom     = y_top - total_height
+
+    # Header background
+    c.setFillColor(COLOR_HEADER_BG)
+    c.rect(x, y_top - header_height, w, header_height, fill=1, stroke=0)
+
+    # Outer border (drawn after the header fill so it isn't painted over)
+    c.setStrokeColor(colors.black); c.setLineWidth(2)
+    c.rect(x, y_bottom, w, total_height, fill=0, stroke=1)
+
+    # Header text
+    c.setFillColor(COLOR_RED); c.setFont(NOTES_HEADER_FONT, NOTES_HEADER_SIZE)
+    c.drawCentredString(x + w / 2, y_top - header_height + 10, header_text)
+
+    # Header divider
+    c.setStrokeColor(colors.black); c.setLineWidth(1)
+    c.line(x, y_top - header_height, x + w, y_top - header_height)
+
+    # Body text
+    c.setFillColor(colors.black); c.setFont(NOTES_FONT, NOTES_FONT_SIZE)
+    ty = y_top - header_height - NOTES_BODY_TOP_PAD
+    for line in lines:
+        c.drawString(x + NOTES_TEXT_INSET, ty, line)
+        ty -= NOTES_LEADING
+
+
+def draw_note_placements(c, placements):
+    for y_top, header_text, lines, body_h in placements:
+        draw_notes_box(c, x=NOTES_SECTION_X, y_top=y_top, w=NOTES_SECTION_W,
+                       header_text=header_text, lines=lines, body_height=body_h)
+
+
+def render_assessment_notes_page1(c, payload, page_h, app_info: Dict[str, str],
+                                  placements=None):
     nursing_group      = app_info.get("nursing_group", "")
     province           = app_info.get("province", "")
     nnas_id            = app_info.get("nnas_id", "")
     application_number = app_info.get("application_number", "")
 
-    public_y_top     = (page_h * 0.65) - 108 - 72 + HALF_INCH
-    assessment_y_top = public_y_top - (34 + 60) - GAP_BETWEEN_NOTE_BOXES
+    public_y_top = notes_first_top(page_h)
 
     META_Y       = public_y_top + 160
     META_LEFT    = 30
@@ -2833,22 +3323,11 @@ def render_assessment_notes_page1(c, payload, page_h, app_info: Dict[str, str]):
     draw_meta_pair("NNAS ID Number:",     nnas_id,            META_LEFT, META_Y - META_LEADING)
     draw_meta_pair("Application Number:", application_number, META_MID,  META_Y - META_LEADING)
 
-    if not public_text and not assessment_text:
-        return
-
-    if public_text:
-        pub_lines  = wrap_lines(public_text, "Helvetica", 12, NOTES_SECTION_W - 20)
-        pub_body_h = max(60, len(pub_lines) * 16 + 20)
-        assessment_y_top = public_y_top - (34 + pub_body_h) - GAP_BETWEEN_NOTE_BOXES
-        draw_notes_section(c, x=NOTES_SECTION_X, y_top=public_y_top, w=NOTES_SECTION_W,
-                           header_text="Public Assessment Notes", body_text=public_text,
-                           header_height=34, body_height=pub_body_h)
-    if assessment_text:
-        asmt_lines  = wrap_lines(assessment_text, "Helvetica", 12, NOTES_SECTION_W - 20)
-        asmt_body_h = max(140, len(asmt_lines) * 16 + 20)
-        draw_notes_section(c, x=NOTES_SECTION_X, y_top=assessment_y_top, w=NOTES_SECTION_W,
-                           header_text="Assessment Notes", body_text=assessment_text,
-                           header_height=34, body_height=asmt_body_h)
+    # Only the boxes that fit on this page are drawn here; overflow is drawn
+    # on continuation pages by populate_pdf().
+    if placements is None:
+        placements = build_notes_pages(payload, page_h)[0]
+    draw_note_placements(c, placements)
 
 # =========================================================
 # PDF - PAGE 2: PERSONAL INFO (A1)
@@ -3160,21 +3639,23 @@ def populate_pdf(template_path, payload, app_info: Dict[str, str],
     Build the final PDF by overlaying content onto the template.
 
     Page layout (full template, 7 base pages):
-        Index 0             — Notes + metadata
-        Index 1             — A1 Personal Information
-        Index 2..2+N-1      — A2 Nursing Education Overview, one page per
+        Index 0             - Notes + metadata
+        (after index 0)     - Notes continuation pages, only when the notes
+                               don't fit on index 0 (inserted LAST, see below)
+        Index 1             - A1 Personal Information
+        Index 2..2+N-1      - A2 Nursing Education Overview, one page per
                                education program, all grouped consecutively
                                (N = number of programs; template's fixed
                                slot at index 2 holds the first one)
-        Index 2+N           — A3 Registration (first entry)
-        ...                 — A3 additional entries (dynamic pagination)
-        (3rd-from-last)..   — B1 Domain Breakdown, one page per education
+        Index 2+N           - A3 Registration (first entry)
+        ...                 - A3 additional entries (dynamic pagination)
+        (3rd-from-last)..   - B1 Domain Breakdown, one page per education
                                program, all grouped consecutively (each
                                page labeled with its matching school name
                                and program dates); template's fixed slot
                                holds the first one
-        2nd-from-last       — Evaluator
-        Last                — Part C
+        2nd-from-last       - Evaluator
+        Last                - Part C
 
     All A2 pages are rendered together before registration, and all B1
     pages are rendered together near the end, rather than interleaving
@@ -3186,12 +3667,20 @@ def populate_pdf(template_path, payload, app_info: Dict[str, str],
     for p in reader.pages:
         writer.add_page(p)
 
+    notes_pages: List[List[Tuple[float, str, List[str], float]]] = [[]]
+    w0 = h0 = None
+    footer = extract_notes_footer(template_path)
+
     if PAGE_NOTES < len(writer.pages):
         page0  = writer.pages[PAGE_NOTES]
         w0, h0 = float(page0.mediabox.width), float(page0.mediabox.height)
+        # Keep boxes clear of the footer on every notes page, including the
+        # template page itself.
+        notes_pages = build_notes_pages(payload, h0, bottom=notes_bottom_limit(footer))
         overlay0 = build_overlay(
             w0, h0,
-            lambda c: render_assessment_notes_page1(c, payload, h0, app_info)
+            lambda c: render_assessment_notes_page1(c, payload, h0, app_info,
+                                                    placements=notes_pages[0])
         )
         page0.merge_page(overlay0.pages[0])
 
@@ -3263,6 +3752,22 @@ def populate_pdf(template_path, payload, app_info: Dict[str, str],
         page_ev.merge_page(overlay_ev.pages[0])
 
     render_part_c_last_page(writer, payload)
+
+    # Notes overflow: continuation pages inserted directly after the notes
+    # page, each carrying the template's footer. Done LAST so the fixed and
+    # relative page indices used above (PAGE_A1, PAGE_A2, B1 = 3rd-from-
+    # last, evaluator = 2nd-from-last, Part C = last) are not shifted while
+    # those pages are being populated.
+    if w0 is not None:
+        for i, placements in enumerate(notes_pages[1:], start=1):
+            idx = PAGE_NOTES + i
+            writer.insert_blank_page(width=w0, height=h0, index=idx)
+            overlay_cont = build_overlay(
+                w0, h0,
+                lambda c, _p=placements: (draw_notes_footer(c, footer),
+                                          draw_note_placements(c, _p))
+            )
+            writer.pages[idx].merge_page(overlay_cont.pages[0])
 
     return writer
 
@@ -3513,23 +4018,10 @@ def docx_page1_cover(doc: Document, payload: Dict[str, Any],
           "the use of the Report by a person who is not an NNAS member nursing regulatory body.",
           size=9, color=DOCX_RED, space_after=16)
 
-    notes             = payload.get("assessment_notes") or {}
-    base_public       = safe_str(notes.get("public"))
-    identity_note     = safe_str(notes.get("identity_section_note"))
-    education_note    = safe_str(notes.get("education_section_note"))
-    registration_note = safe_str(notes.get("registration_section_note"))
-
-    section_lines = []
-    if identity_note:
-        section_lines.append(f"Identity Section Note: {identity_note}")
-    if education_note:
-        section_lines.append(f"Education Section Note: {education_note}")
-    if registration_note:
-        section_lines.append(f"Registration Section Note: {registration_note}")
-
-    appended        = "\n".join(section_lines)
-    public_text     = "\n\n".join(p for p in [base_public, appended] if p)
-    assessment_text = safe_str(notes.get("assessment"))
+    # Same notes text as the PDF (shared helper). In Word the notes boxes
+    # are table cells that flow onto the next page by themselves, so no
+    # continuation logic is needed here.
+    public_text, assessment_text = collect_notes_text(payload)
 
     def _notes_box(header: str, body: str):
         tbl = doc.add_table(rows=2, cols=1)
@@ -3892,16 +4384,24 @@ def main(appid: Any,
     if not reference_id:
         reference_id = safe_str(payload_base.get("reference_id")) or str(app_id)
 
-    # ---- Fetch every SMApply review submission ONCE. Registration,
-    # ---- identity documents, and assessment notes are built entirely
-    # ---- from these live review responses (replacing what
-    # ---- additional_content used to supply for those sections);
+    # The application's root SharePoint folder,
+    # applications/<provider>/<reference_id>. Used for the prior-report
+    # lookup and for the C4 Communications / Translations lookups, so it
+    # is resolved BEFORE the payload is built.
+    prior_folder = f"{cfg['applications_base']}/{reference_id}"
+
+    # ---- Fetch every SMApply review submission ONCE. Registration (A3 +
+    # ---- C3), identity documents (C1), other documents (C4) and
+    # ---- assessment notes are built from these live review responses
+    # ---- (plus SharePoint for C4's Communications / Translations lines);
     # ---- personal_info and application_info still come from
     # ---- additional_content, since reviews don't carry them. The same
     # ---- fetched list is reused below for the education fallback, so
     # ---- this API call happens at most once per run.
     reviews          = fetch_all_reviews(app_id, program_id)
-    payload, rev_dbg = build_payload_from_reviews(reviews, payload_base)
+    payload, rev_dbg = build_payload_from_reviews(
+        reviews, payload_base, application_folder_path=prior_folder,
+    )
     dbg["reviews"]   = rev_dbg
 
     app_info_list = build_application_info(
@@ -3919,7 +4419,6 @@ def main(appid: Any,
     # ---- SharePoint, that's a data-integrity problem (likely a missed
     # ---- upload) rather than a normal "no prior report" case, so it
     # ---- raises instead of silently falling back to manual review data.
-    prior_folder   = f"{cfg['applications_base']}/{reference_id}"
     prior_pdf_path = find_prior_report_sharepoint(ctx(), prior_folder)
     if prior_pdf_path:
         try:
@@ -4018,11 +4517,8 @@ def main(appid: Any,
 
     # ---- Part C: port the "Nursing Education Documents" list over from
     # ---- the prior report verbatim (when one was found above), filed as
-    # ---- "C2: Nursing Education Documents" in this report. No
-    # ---- renumbering of the review-derived C1/C3/C4 sections is needed
-    # ---- since that adapter never produced a C2. See
-    # ---- apply_part_c_education_documents for the reasoning on why this
-    # ---- section is NOT trimmed to the newer one-document convention.
+    # ---- "C2: Nursing Education Documents" in this report, placed
+    # ---- between C1 and C3/C4. See apply_part_c_education_documents.
     payload = apply_part_c_education_documents(payload, prior_pdf_path)
 
     # ---- Drop C2 bullets belonging to any program the evaluator chose
@@ -4047,18 +4543,7 @@ def main(appid: Any,
         if str(s.get("header", "")).startswith("C2")
     )
 
-    # ---- Part C: C4 ("Other Documents") is built entirely from the
-    # ---- "Additional documents" SharePoint folder -- step through each
-    # ---- of its direct subfolders, and for any subfolder that actually
-    # ---- contains files, list those files. `prior_folder` is the
-    # ---- application's root folder (applications/<provider>/
-    # ---- <reference_id>), the same path already used above for the
-    # ---- prior-report lookup; "Additional documents" is a sibling of
-    # ---- "Credential reports" under that same root.
-    c4_file_bullets = list_additional_documents_files_by_subfolder(prior_folder)
-    payload = apply_c4_additional_documents_files(payload, c4_file_bullets)
-    dbg["c4_additional_documents_files"] = c4_file_bullets
-
+    part_c = payload.get("part_c_sections") or []
     dbg.update({
         "appid_type":           str(type(appid)),
         "appid_used":           app_id,
@@ -4077,7 +4562,8 @@ def main(appid: Any,
         "pi_keys_sample":       sorted(list((payload.get("personal_info") or {}).keys()))[:12],
         "reg_keys_sample":      sorted(list((payload.get("registration") or {}).keys()))[:12],
         "reg_entries_found":    len(extract_registration_entries(payload)),
-        "part_c_headers":       [safe_str(s.get("header")) for s in (payload.get("part_c_sections") or [])],
+        "part_c_headers":       [safe_str(s.get("header")) for s in part_c],
+        "part_c_bullet_counts": [len(s.get("bullets") or []) for s in part_c],
     })
 
     template_filename = TEMPLATE_FILENAME_FULL if education_programs else TEMPLATE_FILENAME
@@ -4086,6 +4572,13 @@ def main(appid: Any,
     dbg["template_used"]   = template_filename
     dbg["logo_downloaded"] = logo_path is not None
 
+    _footer = extract_notes_footer(template)
+    dbg["notes_footer_found"] = _footer is not None
+    dbg["notes_footer_rect"]  = None if not _footer else {
+        k: round(_footer[k], 1) for k in ("x", "y", "w", "h")
+    }
+    dbg["notes_bottom_limit"] = round(notes_bottom_limit(_footer), 1)
+
     ts = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
     os.makedirs("tmp", exist_ok=True)
 
@@ -4093,12 +4586,11 @@ def main(appid: Any,
     _smapply_lock         = threading.Lock()
 
     # ---------------------------------------------------------
-    # RESTORED FROM SCRIPT 1: clear any files already on the SMApply
-    # upload task (per-provider task id via cfg["smapply_task_id"]) so a
-    # re-run replaces rather than accumulates. Done ONCE here, not inside
-    # _process_rb, because every RB uploads to the same task and clearing
-    # per-upload would delete files uploaded by earlier RBs in the same
-    # run.
+    # Clear any files already on the SMApply upload task (per-provider
+    # task id via cfg["smapply_task_id"]) so a re-run replaces rather than
+    # accumulates. Done ONCE here, not inside _process_rb, because every
+    # RB uploads to the same task and clearing per-upload would delete
+    # files uploaded by earlier RBs in the same run.
     # ---------------------------------------------------------
     dbg["smapply_files_cleared"] = clear_smapply_task_files(app_id, cfg["smapply_task_id"])
 

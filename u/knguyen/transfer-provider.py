@@ -530,10 +530,18 @@ def out_of_range_choices(value: Any, choices: Any) -> List[int]:
 
 
 def choice_labels(field: Dict[str, Any]) -> List[str]:
+    """Option labels in order; choices may be dicts or plain strings."""
     ch = (field or {}).get("choices")
     if not isinstance(ch, list):
         return []
-    return [str(c.get("label")) for c in ch if isinstance(c, dict)]
+    out = []
+    for c in ch:
+        if isinstance(c, dict):
+            out.append(str(next((c[k] for k in ("label", "name", "text", "value")
+                                 if c.get(k) not in (None, "")), "")))
+        else:
+            out.append(str(c))
+    return out
 
 
 def build_task_payload(src_task: Dict[str, Any], tgt_task: Dict[str, Any],
@@ -610,7 +618,8 @@ def build_task_payload(src_task: Dict[str, Any], tgt_task: Dict[str, Any],
             continue
 
         payload[tkey] = value
-        target_defs[tkey] = tf
+        target_defs[tkey] = {"target": tf,
+                             "source": src_fields.get(split_suffix(skey)[0], {})}
         written += 1
 
     return {
@@ -1261,6 +1270,27 @@ def coerce_single_choice(value: Any, target_field: Dict[str, Any]) -> Optional[i
     return None
 
 
+def _diagnose(value: Any, src_def: Dict[str, Any], tgt_def: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Describe a rejected value without exposing free text: the value itself is
+    shown only when it is one of the source field's own option labels.
+    """
+    src_opts, tgt_opts = choice_labels(src_def), choice_labels(tgt_def)
+    out: Dict[str, Any] = {
+        "question": clean_label(tgt_def.get("name") or src_def.get("name"))[:80],
+        "value_type": type(value).__name__,
+        "source_field_type": src_def.get("type"),
+        "target_field_type": tgt_def.get("type"),
+        "source_options": src_opts[:8],
+        "target_options": tgt_opts[:8],
+    }
+    if _is_index(value) or (isinstance(value, list) and all(_is_index(v) for v in value)):
+        out["value"] = value
+    elif isinstance(value, str) and value in src_opts:
+        out["value"] = value
+    return out
+
+
 def write_task_data(api: Api, app_id: int, task_id: int, payload: Dict[str, Any],
                     target_fields: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     """
@@ -1274,7 +1304,10 @@ def write_task_data(api: Api, app_id: int, task_id: int, payload: Dict[str, Any]
     repaired: List[Dict[str, Any]] = []
     dropped: List[Dict[str, Any]] = []
     res: Dict[str, Any] = {}
-    for _ in range(4):
+    defs = target_fields or {}
+    # SMApply may report only one bad field per response, so allow a retry
+    # for every field in the payload.
+    for _ in range(len(payload) + 2):
         res = api.patch(f"/api/applications/{app_id}/tasks/{task_id}/",
                         json_body={"data": payload})
         if res["ok"]:
@@ -1291,14 +1324,17 @@ def write_task_data(api: Api, app_id: int, task_id: int, payload: Dict[str, Any]
             break
         for key, msg in bad.items():
             fixed = None
+            d = defs.get(key) or {}
+            tgt_def, src_def = d.get("target") or {}, d.get("source") or {}
             if SINGLE_CHOICE_ERROR in str(msg):
-                fixed = coerce_single_choice(payload[key], (target_fields or {}).get(key, {}))
+                fixed = coerce_single_choice(payload[key], tgt_def)
             if fixed is not None:
                 repaired.append({"key": key, "from_type": type(payload[key]).__name__,
                                  "to_index": fixed})
                 payload[key] = fixed
             else:
-                dropped.append({"key": key, "error": str(msg)[:200]})
+                dropped.append({"key": key, "error": str(msg)[:200],
+                                **_diagnose(payload[key], src_def, tgt_def)})
                 payload.pop(key)
         if not payload:
             break

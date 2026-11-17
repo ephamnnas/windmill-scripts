@@ -2,6 +2,7 @@
 # requirements:
 # wmill
 # requests
+# openpyxl
 
 """
 SMApply cross-stream application clone
@@ -21,10 +22,43 @@ Direction is parameterized: pass target_program="tm" | "ces" | "auto"
 
 Safety
 ------
-dry_run=True (the default) performs NO writes. It resolves the full task and
-field crosswalk, builds every payload, and returns exactly what it would send,
-including a per-task count of fields that would be written, skipped as
-ambiguous, or dropped as unmappable. Run it dry first and read `warnings`.
+dry_run=True (the default) performs NO writes. It resolves the eligibility
+check, the full task and field crosswalk, builds every payload, and returns
+exactly what it would do. Run it dry first and read `warnings`.
+
+Eligibility workflow
+--------------------
+SMApply refuses to create an application for an applicant who does not meet
+the target program's eligibility criteria, even through the admin API. Before
+creating anything, the script reads the applicant's eligibility answers and
+checks them against the target program's criteria (PROGRAM_CRITERIA).
+
+  * Already eligible: the transfer proceeds.
+  * Not eligible, no eligibility_changes passed: the run stops and reports
+    which condition fails. Nothing is changed.
+  * Not eligible, eligibility_changes passed: only with approved_by and
+    applicant_confirmation filled in, and only if the changes would make the
+    applicant eligible. The script then
+      1. appends the planned change to the change log workbook in SharePoint
+         (the run stops here if the log cannot be written),
+      2. updates the eligibility answers and re-reads them to verify that only
+         the intended answers changed (restoring the originals if not),
+      3. creates and populates the new application,
+      4. logs the outcome; if the create fails, the original answers are
+         restored and logged (restore_eligibility_on_failure).
+
+The change log is ONE workbook with ONE Excel table, appended to row by row
+through the Microsoft Graph workbook API, so concurrent runs cannot overwrite
+each other and SharePoint version history keeps every earlier state. Each
+changed question is one row per event, so the log is append-only.
+
+Eligibility updates use PATCH /api/users/{id}/eligibility/ as documented:
+{"is_completed": <current value>, "responses": {question id: value}}. The
+token's admin account needs the "Assume role" permission. The docs do not say
+whether choice answers are written as option indices (as they are read) or
+as labels, so live changes stay disabled until a test run on a TEST applicant
+(mode="test_eligibility_update") passes and
+ELIGIBILITY_UPDATE_FORMAT_CONFIRMED is set to True.
 
 What is NOT copied
 ------------------
@@ -40,7 +74,7 @@ identify which repeat block a field belongs to. Where a label maps to several
 keys on BOTH sides and the keys differ between programs, the pairing cannot be
 established from the API. Default policy is to skip those and report them for
 manual entry. Set ambiguous_field_policy="positional" to pair them by sorted
-order instead -- this WILL scramble block order if the sort happens not to
+order instead. This WILL scramble block order if the sort happens not to
 agree with form order, so only use it when the fields are empty anyway.
 
 In practice this affects one group: the seven "What language was the
@@ -60,6 +94,7 @@ import re
 import time
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple
+from urllib.parse import quote
 
 import requests
 
@@ -107,6 +142,74 @@ TASK_NAME_ALIASES = {
     "application - contact us ces": "application - contact us tm",
     "application - contact us tm": "application - contact us ces",
 }
+
+# ---- eligibility ---------------------------------------------------------
+
+# Eligibility choice questions, matched by label prefix, with their option
+# order as confirmed from the eligibility form.
+ELIGIBILITY_QUESTIONS: Dict[str, Tuple[str, List[str]]] = {
+    "eligibility_to_apply": ("Eligibility to Apply to NNAS", ["Agree", "Disagree"]),
+    "prior_report": ("Have you completed and receiv", ["Yes", "No"]),
+    "ofac": ("Are any of the documents, cred", ["Yes", "No"]),
+    "jurisdiction": ("Is any part of your application c", ["Yes", "No", "Unsure"]),
+}
+
+# Questions that record a sanctions connection. Changing these is always
+# flagged in the report and the log.
+SANCTIONS_KEYS = {"ofac", "jurisdiction"}
+
+# Program eligibility criteria, transcribed from Program Settings > Eligibility.
+# Update these if the settings change in SMApply.
+PROGRAM_CRITERIA: Dict[str, Dict[str, Any]] = {
+    "tm": {"match": "any", "conditions": [
+        {"key": "jurisdiction", "equals": "No"},
+        {"match": "all", "conditions": [
+            {"key": "prior_report", "equals": "Yes"},
+            {"key": "ofac", "equals": "No"},
+        ]},
+    ]},
+    # As configured: ALL of Yes and No on the same question, which no
+    # applicant can meet. CES is closed to new applications.
+    "ces": {"match": "all", "conditions": [
+        {"key": "jurisdiction", "equals": "Yes"},
+        {"key": "jurisdiction", "equals": "No"},
+    ]},
+}
+
+# Eligibility update endpoint, per the API documentation:
+#   PATCH /api/users/{id}/eligibility/
+#   {"is_completed": true, "responses": {"<question id>": <value>}}
+# Requires the "Assume role" permission on the token's admin account.
+# Choice answers are sent as option indices, the same form GET returns. The
+# docs' example shows text values, so confirm with a test run first, then set
+# ELIGIBILITY_UPDATE_FORMAT_CONFIRMED = True.
+ELIGIBILITY_UPDATE_METHOD = "PATCH"
+ELIGIBILITY_UPDATE_PATH = "/api/users/{user_id}/eligibility/"
+ELIGIBILITY_UPDATE_BODY_KEY = "responses"
+ELIGIBILITY_UPDATE_FORMAT_CONFIRMED = False
+
+# ---- change log (SharePoint) ---------------------------------------------
+
+TENANT_ID_VAR = "u/epham2/AZURE_TENANT_ID"
+CLIENT_ID_VAR = "u/epham2/SHAREPOINT_CLIENT_ID"
+CLIENT_SECRET_VAR = "u/epham2/SHAREPOINT_CLIENT_SECRET"
+GRAPH_BASE = "https://graph.microsoft.com/v1.0"
+SHAREPOINT_HOSTNAME = "nnasca.sharepoint.com"
+SITE_PATH = "/sites/NNAS-Portal-Sharepoint"
+DOCUMENT_LIBRARY_NAME = "Applications"
+
+# Inside the Applications library. Restrict access to this folder in
+# SharePoint: it records changes to applicants' sanctions answers.
+CHANGE_LOG_FOLDER = "Eligibility Change Records"
+CHANGE_LOG_FILE = "Eligibility Change Log.xlsx"
+CHANGE_LOG_TABLE = "ChangeLog"
+CHANGE_LOG_COLUMNS = [
+    "Logged at (UTC)", "Run ID", "Event", "Application reference",
+    "Application ID", "Applicant user ID", "Question ID", "Question",
+    "Stored value (before)", "Answer (before)", "Stored value (after)",
+    "Answer (after)", "Sanctions question", "Reason code", "Approved by",
+    "Applicant confirmation", "New application ID", "Notes",
+]
 
 
 # --------------------------------------------------------------------------
@@ -520,6 +623,507 @@ def build_task_payload(src_task: Dict[str, Any], tgt_task: Dict[str, Any],
 
 
 # --------------------------------------------------------------------------
+# eligibility
+# --------------------------------------------------------------------------
+
+def _norm(s: Any) -> str:
+    return re.sub(r"\s+", " ", str(s or "")).strip().casefold()
+
+
+def _is_index(v: Any) -> bool:
+    return isinstance(v, int) and not isinstance(v, bool)
+
+
+def read_eligibility(api: Api, user_id: int) -> Dict[str, Any]:
+    res = api.get(f"/api/users/{user_id}/eligibility/")
+    if not res["ok"]:
+        raise RuntimeError(f"Could not read eligibility for user {user_id}: "
+                           f"HTTP {res['status']}. The token's admin account "
+                           f"needs the View Users permission.")
+    return res["body"] if isinstance(res["body"], dict) else {}
+
+
+def eligibility_questions(body: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """{"responses": {qid: {"label", "response"}}} -> list with question keys."""
+    out: List[Dict[str, Any]] = []
+    responses = body.get("responses") if isinstance(body, dict) else None
+    if not isinstance(responses, dict):
+        return out
+    for qid, item in responses.items():
+        if not isinstance(item, dict):
+            continue
+        label = item.get("label") or item.get("name") or ""
+        key = next((k for k, (prefix, _) in ELIGIBILITY_QUESTIONS.items()
+                    if _norm(label).startswith(_norm(prefix))), None)
+        out.append({"id": qid, "label": re.sub(r"\s+", " ", label).strip(),
+                    "key": key, "response": item.get("response")})
+    return out
+
+
+def answer_label(key: Optional[str], value: Any) -> str:
+    """Readable answer for a choice question; never returns free text."""
+    choices = ELIGIBILITY_QUESTIONS[key][1] if key else None
+    if _is_index(value):
+        if value == -1:
+            return "(unanswered)"
+        if choices and 0 <= value < len(choices):
+            return choices[value]
+        return f"option {value}"
+    if value is None or value == "":
+        return "(blank)"
+    return "(text or file answer)"
+
+
+def eligibility_answers(questions: List[Dict[str, Any]]) -> Dict[str, str]:
+    answers = {k: "(not asked)" for k in ELIGIBILITY_QUESTIONS}
+    for q in questions:
+        if q["key"]:
+            answers[q["key"]] = answer_label(q["key"], q["response"])
+    return answers
+
+
+def evaluate_criteria(node: Dict[str, Any], answers: Dict[str, str],
+                      failures: List[str]) -> bool:
+    if "conditions" in node:
+        res = [evaluate_criteria(c, answers, failures) for c in node["conditions"]]
+        return any(res) if node.get("match") == "any" else all(res)
+    actual = answers.get(node["key"], "(not asked)")
+    ok = actual == node["equals"]
+    if not ok:
+        failures.append(f"{node['key']} is {actual}, needs {node['equals']}")
+    return ok
+
+
+def resolve_eligibility_changes(questions: List[Dict[str, Any]],
+                                changes: Dict[str, str]) -> Dict[str, Dict[str, Any]]:
+    """{question key: new answer} -> {qid: change details}. Raises ValueError."""
+    resolved: Dict[str, Dict[str, Any]] = {}
+    for key, new_answer in changes.items():
+        if key not in ELIGIBILITY_QUESTIONS:
+            raise ValueError(f"Unknown eligibility question '{key}'. "
+                             f"Use one of {list(ELIGIBILITY_QUESTIONS)}.")
+        choices = ELIGIBILITY_QUESTIONS[key][1]
+        if new_answer not in choices:
+            raise ValueError(f"'{new_answer}' is not an option for {key}: {choices}.")
+        matches = [q for q in questions if q["key"] == key]
+        if len(matches) != 1:
+            raise ValueError(f"Expected one '{key}' question on the applicant's "
+                             f"eligibility form, found {len(matches)}.")
+        q = matches[0]
+        new_value = choices.index(new_answer)
+        if q["response"] == new_value:
+            continue
+        resolved[q["id"]] = {
+            "key": key, "question": q["label"][:120],
+            "before_value": q["response"], "before_answer": answer_label(key, q["response"]),
+            "after_value": new_value, "after_answer": new_answer,
+            "sanctions": key in SANCTIONS_KEYS,
+        }
+    return resolved
+
+
+def write_eligibility(api: Api, user_id: int, values: Dict[str, Any],
+                      is_completed: Optional[bool]) -> Dict[str, Any]:
+    """Send only the answers being changed, keeping is_completed as it was."""
+    path = ELIGIBILITY_UPDATE_PATH.format(user_id=user_id)
+    body: Dict[str, Any] = {ELIGIBILITY_UPDATE_BODY_KEY: values}
+    if isinstance(is_completed, bool):
+        body["is_completed"] = is_completed
+    res = api.request(ELIGIBILITY_UPDATE_METHOD, path, json_body=body)
+    return {"status": res["status"], "ok": res["ok"],
+            "body": None if res["ok"] else res.get("body")}
+
+
+def verify_eligibility(api: Api, user_id: int, expected: Dict[str, Any],
+                       untouched: Dict[str, Any],
+                       is_completed: Optional[bool] = None) -> List[str]:
+    """Re-read; return mismatches. Empty list = exactly as intended."""
+    body = read_eligibility(api, user_id)
+    questions = eligibility_questions(body)
+    current = {q["id"]: q["response"] for q in questions}
+    problems = []
+    if isinstance(is_completed, bool) and body.get("is_completed") != is_completed:
+        problems.append(f"is_completed changed to {body.get('is_completed')!r}")
+    for qid, value in expected.items():
+        if current.get(qid) != value:
+            problems.append(f"{qid}: expected {value}, found {current.get(qid)!r}")
+    for qid, value in untouched.items():
+        if current.get(qid) != value:
+            problems.append(f"{qid}: should be unchanged but differs "
+                            f"({'missing' if qid not in current else 'changed'})")
+    return problems
+
+
+# --------------------------------------------------------------------------
+# change log (one workbook, one table, rows appended via Graph)
+# --------------------------------------------------------------------------
+
+class ChangeLog:
+    def __init__(self, folder: str = CHANGE_LOG_FOLDER, filename: str = CHANGE_LOG_FILE,
+                 table: str = CHANGE_LOG_TABLE):
+        self.folder, self.filename, self.table = folder, filename, table
+        self.token: Optional[str] = None
+        self.drive_id: Optional[str] = None
+        self.item_id: Optional[str] = None
+        self.web_url = ""
+
+    # -- graph plumbing
+    def _token(self) -> str:
+        if self.token:
+            return self.token
+        tenant = (wmill.get_variable(TENANT_ID_VAR) or "").strip()
+        client_id = (wmill.get_variable(CLIENT_ID_VAR) or "").strip()
+        secret = (wmill.get_variable(CLIENT_SECRET_VAR) or "").strip()
+        r = requests.post(
+            f"https://login.microsoftonline.com/{tenant}/oauth2/v2.0/token",
+            data={"client_id": client_id, "client_secret": secret,
+                  "scope": "https://graph.microsoft.com/.default",
+                  "grant_type": "client_credentials"},
+            timeout=60)
+        if r.status_code != 200:
+            raise RuntimeError(f"Graph token request failed {r.status_code}: {r.text[:500]}")
+        self.token = r.json()["access_token"]
+        return self.token
+
+    def _req(self, method: str, endpoint: str, ok=(200,), **kw) -> Any:
+        headers = kw.pop("headers", {})
+        headers["Authorization"] = f"Bearer {self._token()}"
+        r = requests.request(method, f"{GRAPH_BASE}{endpoint}",
+                             headers=headers, timeout=120, **kw)
+        if r.status_code not in ok:
+            raise RuntimeError(f"Graph {method} {endpoint} failed {r.status_code}: "
+                               f"{r.text[:500]}")
+        return r.json() if r.content else None
+
+    def _get_item(self, path: str) -> Optional[Dict[str, Any]]:
+        r = requests.get(f"{GRAPH_BASE}/drives/{self.drive_id}/root:/{quote(path)}",
+                         headers={"Authorization": f"Bearer {self._token()}"}, timeout=60)
+        if r.status_code == 404:
+            return None
+        if r.status_code != 200:
+            raise RuntimeError(f"Graph lookup failed {r.status_code}: {r.text[:500]}")
+        return r.json()
+
+    def _init(self) -> None:
+        if self.item_id:
+            return
+        site = self._req("GET", f"/sites/{SHAREPOINT_HOSTNAME}:{SITE_PATH}")
+        drives = self._req("GET", f"/sites/{site['id']}/drives")["value"]
+        drive = next((d for d in drives if d.get("name") == DOCUMENT_LIBRARY_NAME), None)
+        if not drive:
+            raise RuntimeError(f"Document library '{DOCUMENT_LIBRARY_NAME}' not found.")
+        self.drive_id = drive["id"]
+
+        if self._get_item(self.folder) is None:
+            self._req("POST", f"/drives/{self.drive_id}/root/children", ok=(201, 409),
+                      headers={"Content-Type": "application/json"},
+                      json={"name": self.folder, "folder": {},
+                            "@microsoft.graph.conflictBehavior": "fail"})
+
+        path = f"{self.folder}/{self.filename}"
+        item = self._get_item(path)
+        if item is None:
+            r = requests.put(
+                f"{GRAPH_BASE}/drives/{self.drive_id}/root:/{quote(path)}:/content"
+                f"?@microsoft.graph.conflictBehavior=fail",
+                headers={"Authorization": f"Bearer {self._token()}",
+                         "Content-Type": "application/vnd.openxmlformats-"
+                                         "officedocument.spreadsheetml.sheet"},
+                data=self._new_workbook(), timeout=120)
+            if r.status_code in (200, 201):
+                item = r.json()
+            elif r.status_code == 409:      # created by a concurrent run
+                item = self._get_item(path)
+            else:
+                raise RuntimeError(f"Could not create change log {r.status_code}: "
+                                   f"{r.text[:500]}")
+        self.item_id = item["id"]
+        self.web_url = item.get("webUrl", "")
+
+    def _new_workbook(self) -> bytes:
+        from openpyxl import Workbook
+        from openpyxl.styles import Font
+        from openpyxl.utils import get_column_letter
+        from openpyxl.worksheet.table import Table, TableStyleInfo
+
+        wb = Workbook()
+        ws = wb.active
+        ws.title = "Change Log"
+        ws.append(CHANGE_LOG_COLUMNS)
+        first = [""] * len(CHANGE_LOG_COLUMNS)
+        first[0] = _utc_now()
+        first[2] = "log_created"
+        first[-1] = ("Append-only. Rows are added by the cross-stream clone "
+                     "script; do not edit or delete rows.")
+        ws.append(first)
+        for row in ws.iter_rows():
+            for cell in row:
+                cell.font = Font(name="Arial", size=10, bold=cell.row == 1)
+        last_col = get_column_letter(len(CHANGE_LOG_COLUMNS))
+        table = Table(displayName=self.table, ref=f"A1:{last_col}2")
+        table.tableStyleInfo = TableStyleInfo(name="TableStyleLight9", showRowStripes=True)
+        ws.add_table(table)
+        for i, name in enumerate(CHANGE_LOG_COLUMNS, start=1):
+            ws.column_dimensions[get_column_letter(i)].width = max(14, min(len(name) + 4, 40))
+        ws.freeze_panes = "A2"
+        buf = io.BytesIO()
+        wb.save(buf)
+        return buf.getvalue()
+
+    # -- public
+    def append(self, rows: List[List[Any]]) -> None:
+        if not rows:
+            return
+        self._init()
+        values = [["" if v is None else v for v in r] for r in rows]
+        self._req("POST",
+                  f"/drives/{self.drive_id}/items/{self.item_id}/workbook/tables/"
+                  f"{self.table}/rows/add",
+                  ok=(200, 201), headers={"Content-Type": "application/json"},
+                  json={"index": None, "values": values})
+
+
+def _utc_now() -> str:
+    return datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+
+
+def log_rows(event: str, ctx: Dict[str, Any],
+             changes: Optional[Dict[str, Dict[str, Any]]] = None,
+             use_after: bool = True, new_app_id: Any = "", notes: str = "") -> List[List[Any]]:
+    """One row per changed question, or a single row when there are none."""
+    def row(qid="", c=None):
+        c = c or {}
+        return [
+            _utc_now(), ctx["run_id"], event, ctx["reference"], ctx["application_id"],
+            ctx["applicant_id"], qid, c.get("question", ""),
+            c.get("before_value", ""), c.get("before_answer", ""),
+            c.get("after_value", "") if use_after else c.get("before_value", ""),
+            c.get("after_answer", "") if use_after else c.get("before_answer", ""),
+            ("Yes" if c.get("sanctions") else "No") if c else "",
+            ctx["reason_code"], ctx["approved_by"], ctx["applicant_confirmation"],
+            new_app_id or "", notes,
+        ]
+    if not changes:
+        return [row()]
+    return [row(qid, c) for qid, c in changes.items()]
+
+
+# --------------------------------------------------------------------------
+# eligibility gate (runs before any create)
+# --------------------------------------------------------------------------
+
+def eligibility_gate(api: Api, target_stream: str, applicant_id: int,
+                     ctx: Dict[str, Any], changes: Optional[Dict[str, str]],
+                     dry_run: bool, log: ChangeLog) -> Dict[str, Any]:
+    """
+    Returns {"status": "eligible" | "planned" | "updated" | "blocked" | "error",
+             "report": {...}, "message": str, "applied": {...} or None}
+    """
+    criteria = PROGRAM_CRITERIA[target_stream]
+    elig_body = read_eligibility(api, applicant_id)
+    completed = elig_body.get("is_completed")
+    questions = eligibility_questions(elig_body)
+    answers = eligibility_answers(questions)
+    failures: List[str] = []
+    eligible = evaluate_criteria(criteria, answers, failures)
+    rep: Dict[str, Any] = {"answers": answers, "meets_target_criteria": eligible}
+
+    if eligible:
+        if changes:
+            rep["note"] = "Already eligible; eligibility_changes were not needed or applied."
+        return {"status": "eligible", "report": rep, "applied": None}
+
+    rep["failing_conditions"] = failures
+    if not changes:
+        return {"status": "blocked", "report": rep, "applied": None,
+                "message": (f"The applicant does not meet the {target_stream.upper()} "
+                            f"eligibility criteria, so SMApply would refuse the "
+                            f"create. Nothing was changed. If the applicant has "
+                            f"confirmed different answers, pass eligibility_changes "
+                            f"with approved_by and applicant_confirmation.")}
+    if not ctx["approved_by"] or not ctx["applicant_confirmation"]:
+        return {"status": "error", "report": rep, "applied": None,
+                "message": "eligibility_changes requires approved_by and "
+                           "applicant_confirmation."}
+    try:
+        resolved = resolve_eligibility_changes(questions, changes)
+    except ValueError as exc:
+        return {"status": "error", "report": rep, "applied": None, "message": str(exc)}
+
+    after = dict(answers)
+    for c in resolved.values():
+        after[c["key"]] = c["after_answer"]
+    after_failures: List[str] = []
+    eligible_after = evaluate_criteria(criteria, after, after_failures)
+    rep["planned_changes"] = [
+        {"question_id": qid, "question": c["question"], "before": c["before_answer"],
+         "after": c["after_answer"], "sanctions_question": c["sanctions"]}
+        for qid, c in resolved.items()]
+    rep["meets_target_criteria_after_changes"] = eligible_after
+    if any(c["sanctions"] for c in resolved.values()):
+        rep["sanctions_answer_change"] = (
+            "This changes the applicant's sanctions answer. It is recorded with "
+            "the approver and the applicant's confirmation.")
+    if not resolved:
+        return {"status": "error", "report": rep, "applied": None,
+                "message": "eligibility_changes match the current answers; nothing to change."}
+    if not eligible_after:
+        rep["failing_conditions_after_changes"] = after_failures
+        return {"status": "error", "report": rep, "applied": None,
+                "message": (f"These changes would still not meet the "
+                            f"{target_stream.upper()} criteria. Nothing was changed.")}
+
+    if dry_run:
+        rep["log_rows_to_append"] = len(resolved)
+        return {"status": "planned", "report": rep, "applied": None}
+
+    if not ELIGIBILITY_UPDATE_FORMAT_CONFIRMED:
+        return {"status": "error", "report": rep, "applied": None,
+                "message": ("The eligibility update format has not been confirmed. "
+                            "Run mode='test_eligibility_update' on a TEST applicant, "
+                            "then set ELIGIBILITY_UPDATE_FORMAT_CONFIRMED = True. "
+                            "Nothing was changed.")}
+
+    # 1. log first; no log, no change
+    try:
+        log.append(log_rows("planned", ctx, resolved))
+    except Exception as exc:
+        return {"status": "error", "report": rep, "applied": None,
+                "message": f"Could not write the change log, so nothing was changed: {exc}"}
+    rep["change_log"] = log.web_url
+
+    # 2. update and verify
+    originals = {q["id"]: q["response"] for q in questions}
+    expected = {qid: c["after_value"] for qid, c in resolved.items()}
+    untouched = {qid: v for qid, v in originals.items() if qid not in resolved}
+    upd = write_eligibility(api, applicant_id, expected, completed)
+    problems = [] if upd["ok"] else [f"update returned HTTP {upd['status']}"]
+    if upd["ok"]:
+        problems = verify_eligibility(api, applicant_id, expected, untouched, completed)
+    if problems:
+        # Put back the changed answers AND anything else the update disturbed.
+        current = {q["id"]: q["response"]
+                   for q in eligibility_questions(read_eligibility(api, applicant_id))}
+        disturbed = {qid: v for qid, v in untouched.items() if current.get(qid) != v}
+        restore = restore_eligibility(api, applicant_id, resolved, ctx, log,
+                                      reason="update did not verify",
+                                      also_restore=disturbed, is_completed=completed)
+        rep["update"] = {"status": upd["status"], "problems": problems, "restore": restore}
+        _safe_log(log, log_rows("update_failed", ctx, resolved,
+                                notes="; ".join(problems)[:500]))
+        return {"status": "error", "report": rep, "applied": None,
+                "message": "The eligibility update did not verify; see report.eligibility.update."}
+
+    _safe_log(log, log_rows("eligibility_updated", ctx, resolved))
+    rep["update"] = {"status": upd["status"], "verified": True}
+    return {"status": "updated", "report": rep,
+            "applied": {"resolved": resolved, "untouched": untouched,
+                        "is_completed": completed}}
+
+
+def restore_eligibility(api: Api, applicant_id: int, resolved: Dict[str, Dict[str, Any]],
+                        ctx: Dict[str, Any], log: ChangeLog, reason: str,
+                        also_restore: Optional[Dict[str, Any]] = None,
+                        is_completed: Optional[bool] = None) -> Dict[str, Any]:
+    originals = {qid: c["before_value"] for qid, c in resolved.items()}
+    originals.update(also_restore or {})
+    res = write_eligibility(api, applicant_id, originals, is_completed)
+    problems = verify_eligibility(api, applicant_id, originals, {}, is_completed) if res["ok"] \
+        else [f"restore returned HTTP {res['status']}"]
+    event = "restored" if not problems else "restore_failed"
+    _safe_log(log, log_rows(event, ctx, resolved, use_after=False,
+                            notes=reason + ("" if not problems else
+                                            " | " + "; ".join(problems)[:400])))
+    return {"restored": not problems, "problems": problems}
+
+
+def _safe_log(log: ChangeLog, rows: List[List[Any]]) -> Optional[str]:
+    try:
+        log.append(rows)
+        return None
+    except Exception as exc:
+        return str(exc)[:300]
+
+
+# --------------------------------------------------------------------------
+# test mode: confirm the eligibility update format on a TEST applicant
+# --------------------------------------------------------------------------
+
+def run_update_test(api: Api, test_user_id: int, changes: Optional[Dict[str, str]],
+                    log_to_sharepoint: bool) -> Dict[str, Any]:
+    user = api.get(f"/api/users/{test_user_id}/")
+    if not user["ok"]:
+        return {"status": "error", "message": f"Could not read user {test_user_id}: "
+                                              f"HTTP {user['status']}"}
+    u = user["body"] if isinstance(user["body"], dict) else {}
+    marker = " ".join(str(u.get(k) or "") for k in ("first_name", "last_name", "email")).lower()
+    if "test" not in marker:
+        return {"status": "error",
+                "message": "This user is not marked as a test account (no 'test' in "
+                           "name or email). The test was not run."}
+
+    elig_body = read_eligibility(api, test_user_id)
+    completed = elig_body.get("is_completed")
+    questions = eligibility_questions(elig_body)
+    changes = changes or {"jurisdiction": "No"}
+    try:
+        resolved = resolve_eligibility_changes(questions, changes)
+    except ValueError as exc:
+        return {"status": "error", "message": str(exc)}
+    if not resolved:
+        return {"status": "error",
+                "message": "The test change matches the current answers; choose a "
+                           "different answer in eligibility_changes."}
+
+    ctx = {"run_id": f"TEST-{test_user_id}-{datetime.now(timezone.utc):%Y%m%d%H%M%S}",
+           "reference": "TEST", "application_id": "", "applicant_id": test_user_id,
+           "reason_code": "format_test", "approved_by": "format test",
+           "applicant_confirmation": "test account"}
+    log = ChangeLog()
+    log_error = _safe_log(log, log_rows("TEST planned", ctx, resolved)) \
+        if log_to_sharepoint else "skipped"
+
+    originals = {q["id"]: q["response"] for q in questions}
+    expected = {qid: c["after_value"] for qid, c in resolved.items()}
+    untouched = {qid: v for qid, v in originals.items() if qid not in resolved}
+
+    upd = write_eligibility(api, test_user_id, expected, completed)
+    problems = verify_eligibility(api, test_user_id, expected, untouched,
+                                  completed) if upd["ok"] \
+        else [f"update returned HTTP {upd['status']}"]
+
+    back = write_eligibility(api, test_user_id, {qid: c["before_value"]
+                                                 for qid, c in resolved.items()},
+                             completed)
+    restore_problems = verify_eligibility(
+        api, test_user_id, {qid: c["before_value"] for qid, c in resolved.items()},
+        untouched, completed) if back["ok"] else [f"restore returned HTTP {back['status']}"]
+
+    if log_to_sharepoint:
+        _safe_log(log, log_rows("TEST result", ctx, resolved, notes=(
+            "update verified" if not problems else "; ".join(problems)[:300])))
+        _safe_log(log, log_rows("TEST restored", ctx, resolved, use_after=False, notes=(
+            "restore verified" if not restore_problems else
+            "; ".join(restore_problems)[:300])))
+
+    passed = upd["ok"] and not problems and back["ok"] and not restore_problems
+    return {
+        "status": "passed" if passed else "failed",
+        "update": {"http_status": upd["status"], "problems": problems,
+                   "error_body": upd["body"]},
+        "restore": {"http_status": back["status"], "problems": restore_problems,
+                    "error_body": back["body"]},
+        "change_log": log.web_url if log_to_sharepoint else "",
+        "change_log_error": log_error,
+        "next_step": ("Set ELIGIBILITY_UPDATE_FORMAT_CONFIRMED = True." if passed else
+                      "Do not enable eligibility changes. A 403 means the token's "
+                      "admin account lacks the Assume role permission. A 400, or "
+                      "an update that did not verify, may mean the endpoint wants "
+                      "option labels instead of indices; share error_body."),
+    }
+
+
+# --------------------------------------------------------------------------
 # creation
 # --------------------------------------------------------------------------
 
@@ -527,9 +1131,7 @@ def find_existing_target_application(api: Api, program_id: int,
                                      applicant_id: int,
                                      max_pages: int = 6) -> Dict[str, Any]:
     """
-    Both expedited programs are max_applications=1, so an applicant who already
-    holds an application in the target stream cannot receive another. Find it
-    rather than letting the create fail with an opaque 403.
+    Report any application the applicant already holds in the target program.
 
     The filter parameters are undocumented, so every row is re-checked
     client-side; a silently ignored filter cannot produce a false positive.
@@ -564,7 +1166,7 @@ def find_existing_target_application(api: Api, program_id: int,
         body = res["body"] if res["ok"] else {}
 
     return {"found": found, "pages_read": pages_read,
-            "filter_trusted": bool(res.get("ok"))}
+            "lookup_ok": bool(res.get("ok"))}
 
 
 def create_application(api: Api, program_id: int, applicant_id: int,
@@ -576,7 +1178,7 @@ def create_application(api: Api, program_id: int, applicant_id: int,
     400 "applicant: user is required".
 
     The admin account behind the token needs the Create Applications
-    permission, and the applicant must already be a member of the site.
+    permission, and the applicant must meet the program's eligibility criteria.
     """
     body = override or {"applicant": applicant_id, "program": program_id}
     if title and not override:
@@ -600,10 +1202,9 @@ def create_application(api: Api, program_id: int, applicant_id: int,
     if isinstance(b, dict):
         text = str(b.get("text") or json.dumps(b))
     if "not eligible for this program" in text:
-        reason = ("SMApply rejected the applicant as not eligible. Both "
-                  "expedited programs are max_applications=1, so the usual "
-                  "cause is that this applicant already holds an application "
-                  "in the target stream.")
+        reason = ("SMApply rejected the applicant as not eligible for the target "
+                  "program. Their eligibility answers do not meet its criteria, "
+                  "or the program's application limit has been reached.")
     elif res["status"] == 403:
         reason = ("403 from SMApply. Check that the token's admin account has "
                   "the Create Applications permission.")
@@ -662,6 +1263,7 @@ def copy_file(api: Api, src_url: str, filename: str, app_id: int, task_id: int,
         tries.append({"field": target_key})
     tries.append(None)
 
+    tries_err: Dict[str, Any] = {"filename": filename, "ok": False}
     for extra in tries:
         res = api.post(path,
                        files={"file": (filename, io.BytesIO(blob),
@@ -680,7 +1282,7 @@ def copy_file(api: Api, src_url: str, filename: str, app_id: int, task_id: int,
 # --------------------------------------------------------------------------
 
 def main(
-    source_application_id: int,
+    source_application_id: int = 0,
     target_program: str = "auto",
     dry_run: bool = True,
     copy_files: bool = True,
@@ -695,12 +1297,19 @@ def main(
     create_payload_override: Optional[dict] = None,
     max_file_mb: int = 50,
     extra_exclude_task_names: Optional[List[str]] = None,
-    **kwargs: Any,
+    eligibility_changes: Optional[dict] = None,
+    approved_by: str = "",
+    applicant_confirmation: str = "",
+    reason_code: str = "partner_contract_termination",
+    restore_eligibility_on_failure: bool = True,
+    mode: str = "transfer",
+    test_user_id: int = 0,
+    test_log_to_sharepoint: bool = True,
 ) -> dict:
     """
     source_application_id   The application to copy FROM.
     target_program          "auto" (the other stream), "tm", or "ces".
-    dry_run                 True = resolve and plan only, no writes at all.
+    dry_run                 True = check and plan only, no writes at all.
     copy_files              Re-upload attachments on copied tasks.
     mark_tasks_complete     Also mark each written task complete.
     fire_automations        Send apply-automations: full on the completion
@@ -708,12 +1317,11 @@ def main(
     ambiguous_field_policy  "skip" (default) or "positional". See module docs.
     include_empty_fields    Write blanks as well as answered fields.
     target_application_id   Populate THIS existing application instead of
-                            creating one. Both programs are max_applications=1,
-                            so this is the only route for an applicant who
-                            already holds an application in the target stream.
+                            creating one (skips the eligibility check).
     reuse_existing_target   If the applicant already has a target-stream
-                            application, populate it rather than failing.
-                            Off by default, because it overwrites answers.
+                            application, populate it rather than creating
+                            another. Off by default, because it overwrites
+                            answers.
     copy_signature_fields   Re-upload file-typed fields such as the Terms and
                             Conditions signature. Off by default: an attestation
                             signature given for one application should normally
@@ -722,18 +1330,47 @@ def main(
                             Dry runs need an existing application in the target
                             program to read its field keys. Left at 0, one is
                             picked automatically.
-    create_payload_override Bypass the create-candidate ladder with an exact
-                            POST body, once the working shape is known.
+    create_payload_override Exact POST body for the create, if ever needed.
+    eligibility_changes     Only when the applicant does not meet the target
+                            criteria and has CONFIRMED different answers,
+                            e.g. {"ofac": "No"}. Keys: eligibility_to_apply,
+                            prior_report, ofac, jurisdiction.
+    approved_by             Required with eligibility_changes.
+    applicant_confirmation  Required with eligibility_changes: where the
+                            applicant's confirmation is recorded.
+    reason_code             Recorded in the change log.
+    restore_eligibility_on_failure
+                            If the create fails after an eligibility change,
+                            put the original answers back (logged).
+    mode                    "transfer" (default) or "test_eligibility_update".
+    test_user_id            For mode="test_eligibility_update": a TEST
+                            applicant's user id. Changes one answer, verifies,
+                            and restores it.
+    test_log_to_sharepoint  In test mode, also test appending to the change log.
     """
     started = datetime.now(timezone.utc)
     api = Api(_get_token())
+
+    if mode == "test_eligibility_update":
+        if not test_user_id:
+            return {"status": "error", "message": "Pass test_user_id."}
+        return run_update_test(api, test_user_id, eligibility_changes,
+                               test_log_to_sharepoint)
+    if mode != "transfer":
+        return {"status": "error", "message": "mode must be 'transfer' or "
+                                              "'test_eligibility_update'."}
+    if not source_application_id:
+        return {"status": "error", "message": "Pass source_application_id."}
 
     if ambiguous_field_policy not in ("skip", "positional"):
         return {"status": "error",
                 "message": "ambiguous_field_policy must be 'skip' or 'positional'."}
 
-    if extra_exclude_task_names:
-        EXCLUDE_SUBSTRINGS.extend(norm_task_name(n) for n in extra_exclude_task_names)
+    exclude_extra = [norm_task_name(n) for n in (extra_exclude_task_names or [])]
+
+    def excluded(name: Any) -> bool:
+        n = norm_task_name(name)
+        return is_excluded(name) or any(sub in n for sub in exclude_extra)
 
     # ---- source
     src_app = fetch_application(api, source_application_id)
@@ -775,12 +1412,40 @@ def main(
     }
     warnings: List[str] = []
 
+    ctx = {
+        "run_id": f"{src_app.get('reference_id') or source_application_id}-"
+                  f"{started:%Y%m%d%H%M%S}",
+        "reference": src_app.get("reference_id") or "",
+        "application_id": source_application_id,
+        "applicant_id": applicant_id,
+        "reason_code": (reason_code or "").strip(),
+        "approved_by": (approved_by or "").strip(),
+        "applicant_confirmation": (applicant_confirmation or "").strip(),
+    }
+    log = ChangeLog()
+    applied: Optional[Dict[str, Any]] = None
+
+    # ---- eligibility, existing applications, create
+    new_app_id: Optional[int] = None
+    existing: Dict[str, Any] = {"found": []}
+    if not dry_run:
+        existing = find_existing_target_application(api, tgt_program_id, applicant_id)
+        report["existing_target_applications"] = existing["found"]
+
+    needs_create = not target_application_id and not (reuse_existing_target and existing["found"])
+    if needs_create:
+        gate = eligibility_gate(api, tgt_stream, applicant_id, ctx,
+                                eligibility_changes, dry_run, log)
+        report["eligibility"] = gate["report"]
+        if gate["status"] in ("blocked", "error"):
+            return {"status": f"eligibility_{gate['status']}",
+                    "message": gate.get("message"), "report": report}
+        applied = gate.get("applied")
+
     # ---- source tasks
     src_tasks = fetch_all_tasks(api, source_application_id)
     report["source_task_count"] = len(src_tasks)
 
-    # ---- create (or resolve a reference for planning)
-    new_app_id: Optional[int] = None
     if dry_run:
         ref_id = reference_target_application_id or pick_reference_application(
             api, tgt_program_id, exclude_id=source_application_id)
@@ -794,9 +1459,6 @@ def main(
         report["reference_target_application_id"] = ref_id
         tgt_tasks = fetch_all_tasks(api, ref_id)
     else:
-        existing = find_existing_target_application(api, tgt_program_id, applicant_id)
-        report["existing_target_applications"] = existing["found"]
-
         if target_application_id:
             new_app_id = target_application_id
             report["mode"] = "populate_supplied_application"
@@ -807,8 +1469,6 @@ def main(
                 f"Populating existing {tgt_stream.upper()} application "
                 f"{new_app_id}; any answers already there will be overwritten.")
         else:
-            # An existing application is reported but does not block the
-            # create; SMApply decides eligibility, not this script.
             if existing["found"]:
                 warnings.append(
                     f"Applicant already holds {len(existing['found'])} "
@@ -821,19 +1481,26 @@ def main(
             report["creation"] = creation
             if not creation.get("created"):
                 msg = creation.get("reason") or "SMApply rejected the create."
-                if existing["found"]:
-                    msg += (f" The applicant already has "
-                            f"{len(existing['found'])} application(s) in this "
-                            f"program, which is above its max_applications=1 "
-                            f"setting, so that is the likely trigger. Either "
-                            f"raise the per-applicant limit in the program's "
-                            f"SMApply settings, or pass "
-                            f"target_application_id / reuse_existing_target "
-                            f"to populate one that already exists.")
-                return {"status": "create_failed", "message": msg,
-                        "report": report}
+                if applied:
+                    if restore_eligibility_on_failure:
+                        report["eligibility"]["restore"] = restore_eligibility(
+                            api, applicant_id, applied["resolved"], ctx, log,
+                            reason="create failed after eligibility change",
+                            is_completed=applied.get("is_completed"))
+                        msg += " The applicant's original eligibility answers were restored."
+                    else:
+                        _safe_log(log, log_rows("transfer_failed", ctx, applied["resolved"],
+                                                notes="eligibility change left in place"))
+                        msg += " The eligibility change was left in place (logged)."
+                return {"status": "create_failed", "message": msg, "report": report}
             new_app_id = creation["application_id"]
             report["mode"] = "created_new_application"
+            if applied:
+                err = _safe_log(log, log_rows("transfer_created", ctx, applied["resolved"],
+                                              new_app_id=new_app_id))
+                if err:
+                    warnings.append(f"Transfer succeeded but the change log could not "
+                                    f"record it: {err}")
 
         report["new_application_id"] = new_app_id
         tgt_tasks = fetch_all_tasks(api, new_app_id)
@@ -845,7 +1512,7 @@ def main(
     unmatched_tasks: List[str] = []
 
     for sname, stask in src_tasks.items():
-        if is_excluded(stask.get("name")):
+        if excluded(stask.get("name")):
             continue
         tname = sname if sname in tgt_tasks else TASK_NAME_ALIASES.get(sname, "")
         ttask = tgt_tasks.get(tname) if tname else None
@@ -868,10 +1535,10 @@ def main(
         for a in p["ambiguous"]:
             warnings.append(
                 f"{p['name']}: {len(a['source_keys'])} fields share the label "
-                f"'{a['label'][:60]}' on both sides -- {a['resolution']}.")
+                f"'{a['label'][:60]}' on both sides; {a['resolution']}.")
             manual_followup.append({"task": p["name"], "reason": "ambiguous repeat block",
                                     "label": a["label"][:70]})
-        n_drop = sum(1 for u in p["unmappable"])
+        n_drop = len(p["unmappable"])
         if n_drop:
             warnings.append(
                 f"{p['name']}: {n_drop} field(s) exist only in "
@@ -917,9 +1584,7 @@ def main(
 
     if dry_run:
         report["warnings"] = warnings
-        report["sample_payload"] = (
-            {p["name"]: dict(list(p["payload"].items())[:5]) for p in plans[:3]}
-        )
+        report["sample_payload_keys"] = {p["name"]: list(p["payload"])[:5] for p in plans[:3]}
         report["elapsed_s"] = round(
             (datetime.now(timezone.utc) - started).total_seconds(), 1)
         return {"status": "dry_run", "report": report}
@@ -957,6 +1622,6 @@ def main(
     report["elapsed_s"] = round((datetime.now(timezone.utc) - started).total_seconds(), 1)
 
     failures = [r for r in results if not r.get("data", {}).get("ok", True)]
-    return {"status": "ok" if not failures and not warnings else "partial",
+    return {"status": "ok" if not failures else "partial",
             "new_application_id": new_app_id,
             "report": report}

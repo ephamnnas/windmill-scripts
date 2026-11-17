@@ -11,6 +11,16 @@ schema:
       description: ''
       default: skip
       originalType: string
+    applicant_confirmation:
+      type: string
+      description: ''
+      default: ''
+      originalType: string
+    approved_by:
+      type: string
+      description: ''
+      default: ''
+      originalType: string
     copy_files:
       type: boolean
       description: ''
@@ -28,6 +38,11 @@ schema:
       type: boolean
       description: ''
       default: true
+    eligibility_changes:
+      type: object
+      description: ''
+      default: null
+      properties: {}
     extra_exclude_task_names:
       type: array
       description: ''
@@ -51,10 +66,24 @@ schema:
       type: integer
       description: ''
       default: 50
+    mode:
+      type: string
+      description: ''
+      default: transfer
+      originalType: string
+    reason_code:
+      type: string
+      description: ''
+      default: partner_contract_termination
+      originalType: string
     reference_target_application_id:
       type: integer
       description: ''
       default: 0
+    restore_eligibility_on_failure:
+      type: boolean
+      description: ''
+      default: true
     reuse_existing_target:
       type: boolean
       description: ''
@@ -62,7 +91,7 @@ schema:
     source_application_id:
       type: integer
       description: ''
-      default: null
+      default: 0
     target_application_id:
       type: integer
       description: ''
@@ -72,5 +101,12 @@ schema:
       description: ''
       default: auto
       originalType: string
-  required:
-    - source_application_id
+    test_log_to_sharepoint:
+      type: boolean
+      description: ''
+      default: true
+    test_user_id:
+      type: integer
+      description: ''
+      default: 0
+  required: []

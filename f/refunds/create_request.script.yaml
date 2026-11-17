@@ -1,0 +1,49 @@
+summary: ''
+description: ''
+lock: '!inline f/refunds/create_request.script.lock'
+kind: script
+schema:
+  $schema: https://json-schema.org/draft/2020-12/schema
+  type: object
+  properties:
+    application_id:
+      type: integer
+      description: ''
+      default: null
+    ctx_email:
+      type: string
+      description: ''
+      default: ''
+      originalType: string
+    dry_run:
+      type: boolean
+      description: ''
+      default: true
+    reason:
+      type: string
+      description: ''
+      default: Duplicate payment
+      originalType: string
+    reason_details:
+      type: string
+      description: ''
+      default: ''
+      originalType: string
+    refund_amount:
+      type: string
+      description: ''
+      default: ''
+      originalType: string
+    refund_type:
+      type: string
+      description: ''
+      default: full
+      originalType: string
+    stripe_reference:
+      type: string
+      description: ''
+      default: null
+      originalType: string
+  required:
+    - application_id
+    - stripe_reference

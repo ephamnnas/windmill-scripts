@@ -1,0 +1,19 @@
+summary: ''
+description: ''
+lock: '!inline f/refunds/list_requests.script.lock'
+kind: script
+schema:
+  $schema: https://json-schema.org/draft/2020-12/schema
+  type: object
+  properties:
+    ctx_email:
+      type: string
+      description: ''
+      default: ''
+      originalType: string
+    view:
+      type: string
+      description: ''
+      default: open
+      originalType: string
+  required: []

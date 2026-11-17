@@ -1,0 +1,24 @@
+summary: ''
+description: ''
+lock: '!inline f/refunds/complete_and_lock.script.lock'
+kind: script
+schema:
+  $schema: https://json-schema.org/draft/2020-12/schema
+  type: object
+  properties:
+    ctx_email:
+      type: string
+      description: ''
+      default: ''
+      originalType: string
+    request_id:
+      type: integer
+      description: ''
+      default: null
+    stripe_refund_id:
+      type: string
+      description: ''
+      default: ''
+      originalType: string
+  required:
+    - request_id

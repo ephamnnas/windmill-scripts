@@ -98,6 +98,8 @@ export default function App() {
                             `whoami runnable not found. Backend runnables available: ${Object.keys(B).join(', ') || 'none'}`
                         )
                     }
+                    const p = await B.ping({})
+                    throw new Error(`ping returned ${JSON.stringify(p)}`)
                     const r = await api.whoami({})
                     done = true
                     if (!r || typeof r !== 'object' || !r.roles) {

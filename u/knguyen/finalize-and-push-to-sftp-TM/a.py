@@ -42,6 +42,18 @@ payload maps cleanly.
 
 CHANGES IN THIS REVISION
 ------------------------
+* Applicant copy: Assessment Notes are now removed from EVERY page, not just
+  page 1. The credential report generator continues long notes onto extra
+  pages inserted after page 1 (box header "Assessment Notes (continued)").
+  The previous strip_assessment_notes() only looked at page 1, so continued
+  Assessment Notes stayed in the applicant copy, and if the Public notes
+  filled page 1, nothing was removed at all. Boxes are now found by their
+  exact header text ("Assessment Notes" / "Assessment Notes (continued)"),
+  so "Public Assessment Notes" boxes and any note text mentioning
+  "Assessment Notes" are never touched. A continuation page left empty by
+  the removal is deleted (page 1 never is), so the applicant copy has no
+  blank pages. The function's signature and True/False return value are
+  unchanged.
 * The application-summary PDF that gets PARSED is now the same file that gets
   PACKAGED: the newest '<ReferenceID>_<YYYYMMDD>_<HHMMSS>.pdf' in the
   application root (pick_latest_applicant_form). Previously the parser took the
@@ -172,7 +184,7 @@ REPORT_LATEST_SUFFIX         = "_latest.pdf"
 # Recognized designation tokens inside a report filename.
 REPORT_DESIGNATIONS = ("RN", "LPN", "RPN")
 
-# Applicant copy: a redacted report (Assessment Notes block removed) is written
+# Applicant copy: a redacted report (Assessment Notes boxes removed) is written
 # here, in a new folder under each regulator's report folder.
 APPLICANT_COPY_SUBFOLDER = "Applicant Copy"
 APPLICANT_COPY_SUFFIX    = "_applicant"   # replaces the "_latest" suffix
@@ -2037,54 +2049,105 @@ def sftp_append_index(sftp: paramiko.SFTPClient, remote_dir: str,
 
 
 # =========================================================
-# APPLICANT COPY  (report with the Assessment Notes block removed)
+# APPLICANT COPY  (report with every Assessment Notes box removed)
+# ---------------------------------------------------------
+# The credential report generator continues long notes onto extra pages
+# inserted after page 1, with box headers such as
+# "Assessment Notes (continued)". The applicant copy therefore has to look
+# at EVERY page, not just page 1 (the previous version only checked page 1,
+# so continued Assessment Notes stayed in the applicant copy, and if the
+# Public notes filled page 1, nothing was removed at all).
+#
+#   1. Every page is checked for a notes box header whose text is exactly
+#      "Assessment Notes" or "Assessment Notes (continued)". Matching the
+#      whole header text (not a substring search) means "Public Assessment
+#      Notes" boxes, and any body text that happens to mention "Assessment
+#      Notes", are never touched.
+#   2. Each matching box (grey header bar + bordered body) is redacted,
+#      which deletes the content underneath rather than covering it.
+#   3. Any page AFTER page 1 that held an Assessment Notes box and has no
+#      text left afterwards (a continuation page that only carried
+#      Assessment Notes) is deleted, so the applicant copy has no blank
+#      pages. A continuation page that also carries "Public Assessment
+#      Notes (continued)" is kept. Page 1 is never deleted.
+# The footer logo is an image and is never redacted (images are left
+# untouched by the redaction).
 # =========================================================
+
+ASSESSMENT_NOTES_HEADERS = ("assessment notes", "assessment notes (continued)")
+
+
+def _assessment_notes_headers(pg) -> List["fitz.Rect"]:
+    """Bounding boxes of Assessment Notes box headers on one page."""
+    found: List["fitz.Rect"] = []
+    for block in pg.get_text("dict").get("blocks", []):
+        for line in block.get("lines", []):
+            for span in line.get("spans", []):
+                text = re.sub(r"\s+", " ", span.get("text", "")).strip().lower()
+                if text in ASSESSMENT_NOTES_HEADERS:
+                    found.append(fitz.Rect(span["bbox"]))
+    return found
+
+
+def _notes_box_region(pg, header: "fitz.Rect") -> "fitz.Rect":
+    """
+    Region of the notes box that owns `header`: the union of the wide
+    drawings (header bar and outer border) whose top edge sits just above
+    the header text and that extend below it. Falls back to a region from
+    the header down to just above the footer if no box outline is found.
+    """
+    region = None
+    for dr in pg.get_drawings():
+        b = dr["rect"]
+        if b.width <= 200 or b.height <= 20:
+            continue
+        if not (b.x0 <= header.x0 and b.x1 >= header.x1):
+            continue
+        # top edge just above the header text, bottom edge below it
+        if header.y0 - 40 <= b.y0 <= header.y0 + 2 and b.y1 >= header.y1:
+            region = b if region is None else (region | b)
+    if region is None:
+        region = fitz.Rect(30, header.y0 - 12,
+                           pg.rect.width - 30, pg.rect.height - 90)
+    return fitz.Rect(region.x0 - 2, region.y0 - 2,
+                     region.x1 + 2, region.y1 + 2)
+
 
 def strip_assessment_notes(in_pdf: str, out_pdf: str) -> bool:
     """
-    Produce an applicant copy of a report PDF with the standalone "Assessment
-    Notes" block (its grey header bar + body box, incl. any RB-specific notes)
-    fully removed from page 1. The "Public Assessment Notes" block is kept.
+    Produce an applicant copy of a report PDF with every "Assessment Notes"
+    box removed, including continuation boxes on later pages. "Public
+    Assessment Notes" boxes are kept. Continuation pages left empty by the
+    removal are deleted.
 
-    Removal is a true redaction (content under the region is deleted, not just
-    covered). Returns True if the block was found and removed.
+    Returns True if at least one Assessment Notes box was found and removed.
     """
+    no_images = getattr(fitz, "PDF_REDACT_IMAGE_NONE", 0)
     doc = fitz.open(in_pdf)
     try:
-        pg = doc[0]
-        pub = pg.search_for("Public Assessment Notes")
-        all_an = pg.search_for("Assessment Notes")
-        if not all_an:
-            doc.save(out_pdf, garbage=4, deflate=True)
-            return False
-        # The standalone header is an "Assessment Notes" match that is NOT the
-        # tail of a "Public Assessment Notes" match (same y0). Pick the lowest.
-        pub_ys = {round(r.y0) for r in pub}
-        header = None
-        for r in sorted(all_an, key=lambda r: r.y0, reverse=True):
-            if round(r.y0) not in pub_ys:
-                header = r
-                break
-        if header is None:
-            doc.save(out_pdf, garbage=4, deflate=True)
-            return False
-        # Union of drawing boxes that start at/above the header and extend below
-        # it (the grey header bar + the body box).
-        boxes = [dr["rect"] for dr in pg.get_drawings()
-                 if dr["rect"].width > 200 and dr["rect"].height > 20]
-        region = None
-        for b in boxes:
-            if b.y0 <= header.y0 + 2 and b.y1 >= header.y1:
-                region = b if region is None else (region | b)
-        if region is None:
-            region = fitz.Rect(30, header.y0 - 4,
-                               pg.rect.width - 30, pg.rect.height - 60)
-        region = fitz.Rect(region.x0 - 2, region.y0 - 2,
-                           region.x1 + 2, region.y1 + 2)
-        pg.add_redact_annot(region, fill=(1, 1, 1))
-        pg.apply_redactions()
+        removed_any = False
+        emptied_pages: List[int] = []
+
+        for pno in range(len(doc)):
+            pg = doc[pno]
+            headers = _assessment_notes_headers(pg)
+            if not headers:
+                continue
+            for header in headers:
+                pg.add_redact_annot(_notes_box_region(pg, header), fill=(1, 1, 1))
+            pg.apply_redactions(images=no_images)
+            removed_any = True
+
+            # A continuation page that only carried Assessment Notes is now
+            # blank apart from the footer image: mark it for deletion.
+            if pno > 0 and not pg.get_text().strip():
+                emptied_pages.append(pno)
+
+        for pno in reversed(emptied_pages):
+            doc.delete_page(pno)
+
         doc.save(out_pdf, garbage=4, deflate=True)
-        return True
+        return removed_any
     finally:
         doc.close()
 
@@ -2555,7 +2618,7 @@ def main(reference_id: Optional[str] = None,
                     docs["report"].append(rblock)
                     report_names.append(rep["name"])
 
-                    # ---- applicant copy: strip the Assessment Notes block ----
+                    # ---- applicant copy: strip every Assessment Notes box ----
                     try:
                         ac_local = os.path.join(dl_dir, applicant_copy_name(rep["name"]))
                         removed = strip_assessment_notes(rlocal, ac_local)

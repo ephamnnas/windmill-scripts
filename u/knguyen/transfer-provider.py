@@ -186,7 +186,7 @@ PROGRAM_CRITERIA: Dict[str, Dict[str, Any]] = {
 ELIGIBILITY_UPDATE_METHOD = "PATCH"
 ELIGIBILITY_UPDATE_PATH = "/api/users/{user_id}/eligibility/"
 ELIGIBILITY_UPDATE_BODY_KEY = "responses"
-ELIGIBILITY_UPDATE_FORMAT_CONFIRMED = False
+ELIGIBILITY_UPDATE_FORMAT_CONFIRMED = True   # confirmed by test run 2026-11-17
 
 # ---- change log (SharePoint) ---------------------------------------------
 

@@ -121,10 +121,6 @@ MAX_RETRIES = 3
 
 TASK_STATUS_COMPLETE = 3
 
-# Form-field names tried, in order, to tell the file upload endpoint which
-# question an attachment belongs to.
-FILE_QUESTION_FIELD_NAMES = ["question", "question_id", "key", "field"]
-
 # Task names never copied. Matched as lowercase substrings.
 EXCLUDE_SUBSTRINGS = [
     "payment",
@@ -1389,28 +1385,26 @@ def copy_file(api: Api, src_url: str, filename: str, app_id: int, task_id: int,
                 "error": f"{len(blob)} bytes exceeds max_file_mb"}
 
     path = f"/api/applications/{app_id}/tasks/{task_id}/files/"
-    # SMApply answers an upload without a recognised question reference with
-    # 400 "invalid question id". The form-field name is undocumented here, so
-    # the likely names are tried in turn; a rejected attempt stores nothing.
-    tries: List[Optional[Dict[str, Any]]] = []
+    # Per the API docs: for an upload question on a form task, the file goes
+    # under the question id as the multipart field name; for an upload task,
+    # it goes under "file". The question id is tried first, then without its
+    # repeat suffix, then "file". A rejected attempt stores nothing.
+    names: List[str] = []
     if target_key:
         base_key, _ = split_suffix(target_key)
-        for name in FILE_QUESTION_FIELD_NAMES:
-            tries.append({name: target_key})
-            if base_key != target_key:
-                tries.append({name: base_key})
-    tries.append(None)
+        names += [target_key] + ([base_key] if base_key != target_key else [])
+    names.append("file")
 
     attempts: List[Dict[str, Any]] = []
-    for extra in tries:
+    for name in names:
         res = api.post(path,
-                       files={"file": (filename, io.BytesIO(blob),
-                                       "application/octet-stream")},
-                       data=extra, timeout=UPLOAD_TIMEOUT)
+                       files={name: (filename, io.BytesIO(blob),
+                                     "application/octet-stream")},
+                       timeout=UPLOAD_TIMEOUT)
         if res["ok"]:
             return {"filename": filename, "ok": True, "bytes": len(blob),
-                    "form_data": extra, "response": res.get("body")}
-        attempts.append({"form_data": extra, "status": res["status"],
+                    "field_name": name}
+        attempts.append({"field_name": name, "status": res["status"],
                          "body": res.get("body")})
     return {"filename": filename, "ok": False, "attempts": attempts}
 

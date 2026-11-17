@@ -141,17 +141,17 @@ CRED_REPORTS_SUBFOLDER = "Credential reports"
 # ---------------------------------------------------------
 # C4 ("Other Documents") SharePoint sources
 # ---------------------------------------------------------
-# C4 combines three sources (see build_payload_from_reviews):
-#   1. ECA reports from the Education Document Review task (accepted only).
-#   2. Every file in
+# C4 combines two sources (see build_payload_from_reviews):
+#   1. Every file in
 #        applications/<provider>/<reference_id>/Additional documents/Communications
 #      listed as "<filename> - Communication - <date uploaded>".
-#   3. Every file in
+#   2. Every file in
 #        applications/<provider>/<reference_id>/International Credentials
 #      whose filename contains TRANSLATION_KEYWORD, listed as
 #      "<filename> - Translation - <date uploaded>".
-# Sources 2 and 3 are read via Microsoft Graph. Other subfolders of
-# "Additional documents" are NOT listed.
+# Both are read via Microsoft Graph. Other subfolders of
+# "Additional documents" are NOT listed, and ECA reports are deliberately
+# NOT listed in C4 on this route.
 ADDITIONAL_DOCUMENTS_FOLDER_NAME = "Additional documents"
 COMMUNICATIONS_SUBFOLDER         = "Communications"
 
@@ -1262,7 +1262,7 @@ DISCIPLINE_FLAG_MAP = {0: "Yes", 1: "No"}   # SMApply choice order [Yes, No] -> 
 
 # -----------------------------------------------------------------
 # Document Status gate. Only documents with Document Status == 4
-# ("Meets Requirements") become A3 registration tables and C4 ECA lines.
+# ("Meets Requirements") become A3 registration tables.
 # Blocks with any other status value (e.g. 5 = Waived) are excluded from
 # those; blocks with no Document Status field are kept (don't drop on
 # missing data).
@@ -1549,33 +1549,12 @@ def build_payload_from_reviews(reviews: List[Dict[str, Any]],
             if parts:
                 c1_bullets.append(" - ".join(parts))
 
-    # ---- Education Document Review -> C4 (ECA reports) ----
-    # Stop-gated like registration, and only accepted documents
-    # (Document Status == 4) are listed.
-    ed_rv = by.get(TASK_NAME_EDUCATION)
+    # ---- C4 (Other Documents) ----
+    # ECA reports are deliberately NOT listed in C4 on this route. C4 is
+    # built only from the SharePoint Communications and Translations
+    # folders below.
+    ed_rv = by.get(TASK_NAME_EDUCATION)   # only used for the debug flag
     c4_bullets: List[str] = []
-    eca_count = 0
-    if ed_rv:
-        prev_allows = True   # first block is always eligible
-        for block, add_another in _split_blocks(ed_rv.get("responses"), "add another education"):
-            allowed = prev_allows
-            prev_allows = not _is_stop(add_another)   # gates ONLY the next block
-            if not allowed:
-                continue
-
-            bm = _bmap(block)
-            eca  = safe_str(_get(bm, "ECA ID"))
-            recv = _fmt_review_date(_get(bm, "Document Received Date"))
-            if not (eca or recv):          # empty / abandoned block
-                continue
-            if not _status_accepted(bm):    # keep only Document Status == 4
-                continue
-
-            line = "ECA Report"
-            if eca:  line = f"{line} ({eca})"
-            if recv: line = f"{line} - {recv}"
-            c4_bullets.append(line)
-            eca_count += 1
 
     # ---- Additional documents / Communications -> C4 ----
     comm_dbg: Dict[str, Any] = {}
@@ -1631,7 +1610,6 @@ def build_payload_from_reviews(reviews: List[Dict[str, Any]],
         "matched_notes":        n_rv is not None,
         "registration_entries": len(payload["registration"]),
         "c3_documents":         len(c3_bullets),
-        "c4_eca_reports":       eca_count,
         "part_c_headers":       [s.get("header") for s in payload["part_c_sections"]],
         "communications":       comm_dbg,
         "translations":         trans_dbg,

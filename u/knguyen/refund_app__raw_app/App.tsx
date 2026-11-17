@@ -91,23 +91,26 @@ export default function App() {
         const t = setTimeout(() => {
             if (!done) setLoadErr('No answer from whoami after 60 seconds. Open Jobs (top right) and check the latest run.')
         }, 60000)
-        ;(async () => {
-            try {
-                if (typeof api.whoami !== 'function') {
-                    throw new Error(
-                        `whoami runnable not found. Backend runnables available: ${Object.keys(B).join(', ') || 'none'}`
-                    )
+            ; (async () => {
+                try {
+                    if (typeof api.whoami !== 'function') {
+                        throw new Error(
+                            `whoami runnable not found. Backend runnables available: ${Object.keys(B).join(', ') || 'none'}`
+                        )
+                    }
+                    const r = await api.whoami({})
+                    done = true
+                    if (!r || typeof r !== 'object' || !r.roles) {
+                        throw new Error(`whoami returned an unexpected result: ${JSON.stringify(r) ?? 'undefined'}`)
+                    }
+                    setMe(r)
+                } catch (e) {
+                    done = true
+                    setLoadErr(errText(e))
+                } finally {
+                    clearTimeout(t)
                 }
-                const r = await api.whoami({})
-                done = true
-                setMe(r)
-            } catch (e) {
-                done = true
-                setLoadErr(errText(e))
-            } finally {
-                clearTimeout(t)
-            }
-        })()
+            })()
         return () => clearTimeout(t)
     }, [])
 
@@ -150,9 +153,8 @@ export default function App() {
             {me.test_mode && (
                 <Notice
                     kind="warn"
-                    text={`Test mode: only application ${me.test_application_ids.join(', ')} can be locked.${
-                        me.test_solo ? ' Admin can run every step alone with a test-mode Stripe key.' : ''
-                    }`}
+                    text={`Test mode: only application ${me.test_application_ids.join(', ')} can be locked.${me.test_solo ? ' Admin can run every step alone with a test-mode Stripe key.' : ''
+                        }`}
                 />
             )}
 

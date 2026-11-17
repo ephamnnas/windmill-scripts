@@ -2,5 +2,6 @@ summary: ''
 data:
   datatable: main
   tables: []
+guests: true
 labels: []
 sandbox: true

@@ -30,7 +30,7 @@ locks:
   u/epham2/apps-without-applicant-copies: c1c5938bdfa255f0e644cd8abae5ceb24229a834403d3c1536c9d7559803b9fd
   u/epham2/backup-registration-countries: 5578d18962bcea31736c49c85ee5bc7cc06124ff03701bb72ea08a3f3f2a72bd
   u/epham2/ces-country-screen: 6f52903979dcfb143e52030b60b553ac13afa7631e1d066e941f2c255f861be3
-  u/epham2/ces-transfer-candidates: 5af3d181ba13bef47ee1fa66af428140e95245c7af3661e460e1472ea296392a
+  u/epham2/ces-transfer-candidates: 24d3c48edb65123dbd31fbd0bdee7b7008899d3cc42d86617fa30385193a0d9d
   u/epham2/check-sftp-exports: 9d1b355a4d668d2cced96b4599410f2675e976e154320faed0ed73ff06d5f71f
   u/epham2/check-submitted-copies: be49826db15c5dbd0e5cb0019ff02b63024b36f9405abc8bdf2726d40c65457f
   u/epham2/create-additional-order: 13026e804972159bd51ef07a7fa200a73f1145c9c701778faa360b08c3d5e3a9

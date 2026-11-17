@@ -18,10 +18,10 @@ schema:
       type: integer
       description: ''
       default: 4
-    paid_after_date:
+    paid_on_or_after_date:
       type: string
       description: ''
-      default: 2026-11-13
+      default: 2026-10-13
       originalType: string
     program_id:
       type: integer

@@ -9,8 +9,8 @@ CES -> TM transfer candidates (read-only)
 
 Lists every CES application and decides, per application:
 
-  scope        in_scope       unpaid, or paid AFTER paid_after_date
-               out_of_scope   paid on or before paid_after_date, archived or
+  scope        in_scope       unpaid, or paid ON OR AFTER paid_on_or_after_date
+               out_of_scope   paid before paid_on_or_after_date, archived or
                               trashed, or already has a TM application
                needs_review   paid but no payment date found, or invoiced only
 
@@ -22,6 +22,11 @@ Lists every CES application and decides, per application:
 
   ready        in_scope AND tm_eligible_now: the clone script will create the
                TM application without any eligibility change.
+
+  list_version which version of the jurisdiction question the answer was
+               given against (old list before 3 Oct 2026, or current list)
+  action       Transfer / Re-confirm against current list / Hold: send to SI
+               for outreach / Clarify with applicant / Review
 
 Payment evidence, as in the clone script: a completed Expedited Service
 Payment task (any variant), then the Payment date custom field, then an
@@ -47,6 +52,13 @@ TOKEN_PATH = "u/epham2/SMAPPLY_ACCESS_TOKEN"
 CES_PROGRAM_ID = 295865
 TM_PROGRAM_ID = 295185
 PAYMENT_DATE_FIELD = "Payment date"
+
+# The jurisdiction question's country list was swapped late on 2 Oct 2026
+# (confirmed by Kyle Nguyen). Answers last saved before 3 Oct were given
+# against the old list of about 39 countries; from 3 Oct, against the current
+# list of 7 jurisdictions. An applicant who re-saved after the swap saw the
+# new question, so the last-updated date identifies the list answered.
+LIST_CHANGE_DATE = "2026-10-03"
 TASK_STATUS_COMPLETE = 3
 STATE_NAMES = {0: "active", 1: "locked", 2: "hidden", 3: "archived", 4: "trashed"}
 
@@ -170,6 +182,14 @@ def eligibility(user_id: Any) -> Dict[str, Any]:
                 v = item.get("response")
                 if isinstance(v, int) and not isinstance(v, bool):
                     answers[key] = choices[v] if 0 <= v < len(choices) else "(unanswered)"
+    updated = str(body.get("updated_at") or "")[:10]
+    if answers["jurisdiction"] != "(not asked)":
+        version = ("old list (before 3 Oct 2026)" if updated and updated < LIST_CHANGE_DATE
+                   else "current list" if updated else "unknown")
+    elif answers["ofac"] != "(not asked)":
+        version = "returning-applicant OFAC question"
+    else:
+        version = ""
     tm_ok = answers["jurisdiction"] == "No" or (
         answers["prior_report"] == "Yes" and answers["ofac"] == "No")
     if body.get("is_completed") is False:
@@ -184,8 +204,23 @@ def eligibility(user_id: Any) -> Dict[str, Any]:
         cat = "not_eligible_other"
     else:
         cat = "no_sanctions_answer"
+    # Recommended action, given which list the answer was given against.
+    old = version.startswith("old list")
+    if cat == "tm_eligible_now":
+        action = "Transfer"
+    elif cat == "sanctions_connected" and answers["jurisdiction"] == "Yes":
+        action = ("Re-confirm against current list" if old
+                  else "Hold: send to SI for outreach")
+    elif cat == "sanctions_connected":
+        action = "Review: returning-applicant OFAC answer"
+    elif cat == "unsure_needs_review":
+        action = "Re-confirm against current list" if old else "Clarify with applicant"
+    else:
+        action = "Review manually"
     return {"eligibility": cat, "jurisdiction": answers["jurisdiction"],
-            "ofac": answers["ofac"], "prior_report": answers["prior_report"]}
+            "ofac": answers["ofac"], "prior_report": answers["prior_report"],
+            "eligibility_last_updated": updated, "list_version": version,
+            "action": action}
 
 
 # --------------------------------------------------------------------------
@@ -209,7 +244,7 @@ def existing_tm(applicant_id: Any) -> Optional[str]:
 # per application
 # --------------------------------------------------------------------------
 
-def assess(app_id: int, paid_after_date: str) -> Dict[str, Any]:
+def assess(app_id: int, paid_on_or_after_date: str) -> Dict[str, Any]:
     status, app = _get(f"/applications/{app_id}/")
     if status != 200 or not isinstance(app, dict):
         return {"application_id": app_id, "scope": "error", "detail": f"application HTTP {status}"}
@@ -242,10 +277,10 @@ def assess(app_id: int, paid_after_date: str) -> Dict[str, Any]:
         scope, why = "needs_review", "invoiced, no completed payment"
     elif not row["payment_date"]:
         scope, why = "needs_review", "paid, payment date not found"
-    elif row["payment_date"] > paid_after_date:
-        scope, why = "in_scope", f"paid {row['payment_date']}, after cutoff"
+    elif row["payment_date"] >= paid_on_or_after_date:
+        scope, why = "in_scope", f"paid {row['payment_date']}, on or after {paid_on_or_after_date}"
     else:
-        scope, why = "out_of_scope", f"paid {row['payment_date']}, on or before cutoff"
+        scope, why = "out_of_scope", f"paid {row['payment_date']}, before {paid_on_or_after_date}"
     if row["existing_tm_application"] == "lookup_failed":
         why += "; TM lookup failed, check manually"
     row["scope"], row["scope_reason"] = scope, why
@@ -253,17 +288,17 @@ def assess(app_id: int, paid_after_date: str) -> Dict[str, Any]:
     return row
 
 
-def main(program_id: int = CES_PROGRAM_ID, paid_after_date: str = "2026-11-13",
+def main(program_id: int = CES_PROGRAM_ID, paid_on_or_after_date: str = "2026-10-13",
          limit: int = 0, max_workers: int = 4, include_out_of_scope: bool = False) -> dict:
     """
-    paid_after_date       Paid applications are in scope only if paid AFTER
-                          this date (YYYY-MM-DD, exclusive).
+    paid_on_or_after_date Paid applications are in scope only if paid ON OR
+                          AFTER this date (YYYY-MM-DD, inclusive).
     limit                 Assess only the first N applications (0 = all).
     max_workers           Parallel requests; keep low for rate limits.
     include_out_of_scope  Also list out-of-scope rows (counts are always shown).
     """
-    if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", paid_after_date or ""):
-        return {"status": "error", "message": "paid_after_date must be YYYY-MM-DD."}
+    if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", paid_on_or_after_date or ""):
+        return {"status": "error", "message": "paid_on_or_after_date must be YYYY-MM-DD."}
     started = time.time()
     listing = _paginate(f"/programs/{program_id}/applications/", {"per_page": 100})
     ids = [r["id"] for r in listing if r.get("id")]
@@ -271,22 +306,26 @@ def main(program_id: int = CES_PROGRAM_ID, paid_after_date: str = "2026-11-13",
         ids = ids[:limit]
 
     with ThreadPoolExecutor(max_workers=max(1, max_workers)) as pool:
-        rows = list(pool.map(lambda i: assess(i, paid_after_date), ids))
+        rows = list(pool.map(lambda i: assess(i, paid_on_or_after_date), ids))
 
     order = {"in_scope": 0, "needs_review": 1, "error": 2, "out_of_scope": 3}
     rows.sort(key=lambda r: (order.get(r["scope"], 9), not r.get("ready"),
                              r.get("eligibility", ""), r.get("reference_id") or ""))
 
     matrix = Counter((r["scope"], r.get("eligibility", "-")) for r in rows)
+    actions = Counter((r["scope"], r.get("action", "-"), r.get("list_version", "-"))
+                      for r in rows if r["scope"] != "out_of_scope")
     return {
         "status": "ok",
-        "paid_after_date": paid_after_date,
+        "paid_on_or_after_date": paid_on_or_after_date,
         "applications_assessed": len(rows),
         "ready_to_transfer": sum(1 for r in rows if r.get("ready")),
         "by_scope": dict(Counter(r["scope"] for r in rows)),
         "by_scope_and_eligibility": [
             {"scope": s, "eligibility": e, "applications": n}
             for (s, e), n in sorted(matrix.items(), key=lambda kv: (order.get(kv[0][0], 9), kv[0][1]))],
+        "by_action": [{"scope": s, "action": a, "list_version": v, "applications": n}
+                      for (s, a, v), n in sorted(actions.items())],
         "rows": [r for r in rows if include_out_of_scope or r["scope"] != "out_of_scope"],
         "elapsed_s": round(time.time() - started, 1),
     }

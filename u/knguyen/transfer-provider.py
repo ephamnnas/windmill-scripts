@@ -64,6 +64,8 @@ What is NOT copied
 ------------------
   * payment tasks, sign-off, mailroom/credential-report/staff tasks
     (see EXCLUDE_SUBSTRINGS)
+  * Identification Document tasks: left blank so the applicant uploads ID
+    again on the new application
   * fields with no counterpart in the target program (flagged, not silent)
   * ambiguous repeat-block fields (see below)
 
@@ -134,6 +136,8 @@ EXCLUDE_SUBSTRINGS = [
     "application instructions",
     "document translation",
     "terms and conditions - payment",
+    # Left blank on the new application; the applicant uploads ID again.
+    "identification document",
 ]
 
 # Task names that differ between programs but mean the same thing.
@@ -584,17 +588,18 @@ def build_task_payload(src_task: Dict[str, Any], tgt_task: Dict[str, Any],
         tf = target_field(tkey)
 
         # --- choice questions with an "Other, please specify" option are read
-        # as {"value": <index>, "other": <text>} but must be written as the
-        # bare index. Unanswered ones (index -1, no text) are skipped.
+        # as {"value": <index>, "other": <text>}. Unanswered ones are skipped.
+        # Without "Other" text the bare index is sent, which every single-
+        # choice question accepts. With text, the {value, other} object is
+        # sent as documented for radio-with-other questions; if SMApply
+        # rejects it, write_task_data falls back to the index and reports
+        # that the text was not copied.
         if isinstance(value, dict) and "value" in value and tf.get("choices"):
             idx = value.get("value")
             other = str(value.get("other") or "").strip()
             if (idx is None or idx == CHOICE_UNANSWERED) and not other:
                 continue
-            if _is_index(idx):
-                if other:
-                    other_text.append({"key": skey, "target_key": tkey,
-                                       "label": clean_label(tf.get("name"))[:70]})
+            if _is_index(idx) and not other:
                 value = idx
 
         # --- file-typed fields holding a media path (e.g. the T&C signature).
@@ -1211,7 +1216,9 @@ def _app_summary(b: Any) -> Any:
 
 def create_application(api: Api, program_id: int, applicant_id: int,
                        title: Optional[str] = None,
-                       override: Optional[dict] = None) -> Dict[str, Any]:
+                       override: Optional[dict] = None,
+                       custom_fields: Optional[List[Dict[str, Any]]] = None,
+                       automations: bool = False) -> Dict[str, Any]:
     """
     POST /api/applications/ per the API documentation. `applicant` and
     `program` are the required fields; sending `user` instead returns
@@ -1223,8 +1230,12 @@ def create_application(api: Api, program_id: int, applicant_id: int,
     body = override or {"applicant": applicant_id, "program": program_id}
     if title and not override:
         body["title"] = title
+    if custom_fields and not override:
+        # Set at creation so "Application has been created" automations can
+        # already see them (e.g. hiding payment tasks when Payment date is set).
+        body["custom_fields"] = custom_fields
 
-    res = api.post("/api/applications/", json_body=body)
+    res = api.post("/api/applications/", json_body=body, automations=automations)
     attempt = {"path": "/api/applications/", "payload": body, "status": res["status"],
                "body": _app_summary(res.get("body")) if res["ok"] else res.get("body")}
 
@@ -1344,8 +1355,12 @@ def write_task_data(api: Api, app_id: int, task_id: int, payload: Dict[str, Any]
             if SINGLE_CHOICE_ERROR in str(msg):
                 fixed = coerce_single_choice(payload[key], tgt_def)
             if fixed is not None:
+                lost = isinstance(payload[key], dict) and bool(
+                    str(payload[key].get("other") or "").strip())
                 repaired.append({"key": key, "from_type": type(payload[key]).__name__,
-                                 "to_index": fixed})
+                                 "to_index": fixed, "other_text_lost": lost,
+                                 "question": clean_label(
+                                     (defs.get(key) or {}).get("target", {}).get("name"))[:70]})
                 payload[key] = fixed
             else:
                 dropped.append({"key": key, "error": str(msg)[:200],
@@ -1409,6 +1424,172 @@ def copy_file(api: Api, src_url: str, filename: str, app_id: int, task_id: int,
     return {"filename": filename, "ok": False, "attempts": attempts}
 
 
+
+# --------------------------------------------------------------------------
+# payment carry-over and source archiving
+# --------------------------------------------------------------------------
+
+PAYMENT_DATE_FIELD = "Payment date"            # application custom field, both programs
+# Application custom field set to the source reference on every transfer.
+# TM automations use it to tell transfers apart from applicant-created
+# applications (Transfer - Paid / Transfer - Unpaid labels).
+TRANSFER_SOURCE_FIELD = "Transferred from"
+
+# Application labels applied after every transfer, by id. Fill these in (or
+# pass paid_label_id / unpaid_label_id). An id can be read from the labels on
+# any application that already carries the label:
+#   GET /api/applications/{id}/  ->  "labels": [{"id": ..., "name": ...}]
+TRANSFER_PAID_LABEL_ID = 187694      # "Transfer - Paid"
+TRANSFER_UNPAID_LABEL_ID = 187696    # "Transfer - Unpaid"
+PAYMENT_TASK_PREFIXES = ("expedited service payment", "terms and conditions - payment")  # matched anywhere in the name
+APP_STATE_ACTIVE = 0
+APP_STATE_ARCHIVED = 3
+
+
+def _custom_values(app: Dict[str, Any]) -> Dict[str, Any]:
+    return {cf.get("name"): cf.get("value") for cf in (app.get("custom_fields") or [])
+            if isinstance(cf, dict)}
+
+
+def source_payment_status(src_app: Dict[str, Any],
+                          src_tasks: Dict[str, Dict[str, Any]]) -> Dict[str, Any]:
+    """
+    Same evidence, in the same order, as the sanctions screening script:
+    a completed Expedited Service Payment task, then the Payment date field,
+    then an Invoiced label. "invoiced" is reported separately and is NOT
+    treated as paid, so staff decide those cases.
+    """
+    date = str(_custom_values(src_app).get(PAYMENT_DATE_FIELD) or "").strip()
+    # Matches every variant, e.g. "T - Expedited Service Payment HST ON".
+    pay = [t for n, t in src_tasks.items() if "expedited service payment" in n]
+    done = [t for t in pay if (t.get("instance") or {}).get("status") == TASK_STATUS_COMPLETE]
+    if done:
+        completed = str((done[0].get("instance") or {}).get("completed_at") or "")[:10]
+        return {"paid": True, "payment_date": date or completed,
+                "basis": "completed task: " + "; ".join(t["name"] for t in done)}
+    if date:
+        return {"paid": True, "payment_date": date, "basis": "Payment date field"}
+    if "invoiced" in json.dumps(src_app.get("labels") or []).lower():
+        return {"paid": "invoiced", "payment_date": "",
+                "basis": "Invoiced label, no completed payment task"}
+    return {"paid": False, "payment_date": "",
+            "basis": "payment task not completed" if pay else "no payment task"}
+
+
+def set_application_custom_field(api: Api, app_id: int, name: str, value: str) -> Dict[str, Any]:
+    """
+    PATCH /api/applications/{id}/ with custom_fields [{id, value}]. Every
+    field is sent with its current value first, so a request that replaces
+    the whole list cannot blank the others; if SMApply rejects that (e.g. a
+    read-only field), only the one field is sent. Either way the other
+    fields are re-read afterwards to confirm nothing else changed.
+    """
+    app = fetch_application(api, app_id)
+    fields = [cf for cf in (app.get("custom_fields") or []) if isinstance(cf, dict)]
+    target = next((cf for cf in fields if cf.get("name") == name), None)
+    if target is None:
+        return {"ok": False, "error": f"custom field '{name}' not found on application {app_id}"}
+
+    full = [{"id": cf["id"], "value": value if cf is target else
+             ("" if cf.get("value") is None else cf.get("value"))} for cf in fields]
+    res = api.patch(f"/api/applications/{app_id}/", json_body={"custom_fields": full})
+    if not res["ok"]:
+        res = api.patch(f"/api/applications/{app_id}/",
+                        json_body={"custom_fields": [{"id": target["id"], "value": value}]})
+    if not res["ok"]:
+        return {"ok": False, "status": res["status"], "body": res.get("body")}
+
+    before, after = _custom_values(app), _custom_values(fetch_application(api, app_id))
+    problems = []
+    if str(after.get(name) or "") != str(value):
+        problems.append(f"'{name}' reads back as {after.get(name)!r}")
+    for k, v in before.items():
+        if k != name and str(after.get(k) or "") != str(v or ""):
+            problems.append(f"'{k}' changed unexpectedly")
+    return {"ok": not problems, "status": res["status"], "field_id": target["id"],
+            "problems": problems}
+
+
+def _label_ids(labels: Any) -> List[int]:
+    out: List[int] = []
+    for item in labels or []:
+        try:
+            out.append(int(item.get("id") if isinstance(item, dict) else item))
+        except (TypeError, ValueError):
+            continue
+    return out
+
+
+def assign_label(api: Api, app_id: int, label_id: int) -> Dict[str, Any]:
+    """
+    Same method as the NB onboarding app: labels READ as objects but WRITE as
+    a bare id list that REPLACES the set, so the existing ids are merged in
+    first, and the result is confirmed on readback.
+    """
+    existing = _label_ids(fetch_application(api, app_id).get("labels"))
+    if label_id in existing:
+        return {"ok": True, "already_present": True, "labels": existing}
+    res = api.patch(f"/api/applications/{app_id}/", json_body={"labels": existing + [label_id]})
+    if not res["ok"]:
+        return {"ok": False, "status": res["status"], "body": res.get("body")}
+    after = _label_ids(fetch_application(api, app_id).get("labels"))
+    lost = [i for i in existing if i not in after]
+    return {"ok": label_id in after and not lost, "labels": after,
+            "labels_lost": lost}
+
+
+def complete_payment_tasks(api: Api, app_id: int,
+                           tgt_tasks: Dict[str, Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Mark the target's payment tasks complete WITHOUT firing automations."""
+    out = []
+    for n, t in tgt_tasks.items():
+        if any(p in n for p in PAYMENT_TASK_PREFIXES):
+            out.append({"task": t["name"],
+                        **complete_task(api, app_id, t["task_id"], automations=False)})
+    return out
+
+
+def archive_source_application(api: Api, source_id: int, target_id: int,
+                               ctx: Dict[str, Any], log: "ChangeLog") -> Dict[str, Any]:
+    """
+    Archive (state 3) the source application once its replacement has been
+    checked. Archiving is reversible in SMApply, unlike deletion. Refuses
+    unless the target exists, is active, is in the other expedited program,
+    and belongs to the same applicant.
+    """
+    src = fetch_application(api, source_id)
+    tgt = fetch_application(api, target_id)
+
+    def pid(a):
+        return (a.get("program") or {}).get("id") if isinstance(a.get("program"), dict) else a.get("program")
+
+    def uid(a):
+        return (a.get("applicant") or {}).get("id") if isinstance(a.get("applicant"), dict) else a.get("applicant")
+
+    problems = []
+    if pid(src) not in PROGRAM_BY_ID or pid(tgt) not in PROGRAM_BY_ID or pid(src) == pid(tgt):
+        problems.append("source and target must be in different expedited programs")
+    if uid(src) != uid(tgt):
+        problems.append("source and target belong to different applicants")
+    if tgt.get("state") not in (None, APP_STATE_ACTIVE):
+        problems.append(f"target application state is {tgt.get('state')}, not active")
+    if src.get("state") == APP_STATE_ARCHIVED:
+        problems.append("source is already archived")
+    if problems:
+        return {"status": "refused", "problems": problems}
+
+    res = api.patch(f"/api/applications/{source_id}/", json_body={"state": APP_STATE_ARCHIVED})
+    state_after = fetch_application(api, source_id).get("state") if res["ok"] else None
+    ok = res["ok"] and state_after == APP_STATE_ARCHIVED
+    err = _safe_log(log, log_rows("source_archived" if ok else "source_archive_failed", ctx,
+                                  new_app_id=target_id,
+                                  notes=f"target {tgt.get('reference_id')}; HTTP {res['status']}"))
+    return {"status": "archived" if ok else "failed", "http_status": res["status"],
+            "source_reference_id": src.get("reference_id"),
+            "target_reference_id": tgt.get("reference_id"),
+            "state_after": state_after, "change_log_error": err,
+            "body": None if res["ok"] else res.get("body")}
+
 # --------------------------------------------------------------------------
 # main
 # --------------------------------------------------------------------------
@@ -1438,6 +1619,13 @@ def main(
     mode: str = "transfer",
     test_user_id: int = 0,
     test_log_to_sharepoint: bool = True,
+    carry_payment_date: bool = True,
+    mark_paid_payment_tasks_complete: bool = False,
+    fire_create_automations: bool = True,
+    record_transfer_source: bool = True,
+    apply_transfer_label: bool = True,
+    paid_label_id: int = 0,
+    unpaid_label_id: int = 0,
 ) -> dict:
     """
     source_application_id   The application to copy FROM.
@@ -1483,6 +1671,28 @@ def main(
                             applicant's user id. Changes one answer, verifies,
                             and restores it.
     test_log_to_sharepoint  In test mode, also test appending to the change log.
+    carry_payment_date      If the source was paid, copy its payment date into
+                            the target's "Payment date" custom field.
+    mark_paid_payment_tasks_complete
+                            If the source was paid, also mark the target's
+                            payment tasks complete (no automations fired).
+                            Off by default: prefer a task visibility rule on
+                            "Payment date" in the TM program.
+    fire_create_automations Send apply-automations: full on the create, so the
+                            target program's "Application has been created"
+                            automations run (e.g. hiding payment tasks for
+                            paid applicants). Any other "created" automations
+                            in that program will run too.
+    record_transfer_source  Set the "Transferred from" custom field to the source
+                            reference at creation.
+    apply_transfer_label    Add "Transfer - Paid" or "Transfer - Unpaid" to the new
+                            application, by source payment status.
+    paid_label_id, unpaid_label_id
+                            Override TRANSFER_PAID_LABEL_ID / _UNPAID_LABEL_ID.
+    mode="archive_source"   Archive the source application (state 3) after
+                            its replacement has been checked. Needs
+                            source_application_id, target_application_id
+                            and approved_by. Reversible, unlike deletion.
     """
     started = datetime.now(timezone.utc)
     api = Api(_get_token())
@@ -1492,9 +1702,27 @@ def main(
             return {"status": "error", "message": "Pass test_user_id."}
         return run_update_test(api, test_user_id, eligibility_changes,
                                test_log_to_sharepoint)
+    if mode == "archive_source":
+        if not (source_application_id and target_application_id and (approved_by or "").strip()):
+            return {"status": "error", "message": "archive_source needs source_application_id, "
+                                                  "target_application_id and approved_by."}
+        src = fetch_application(api, source_application_id)
+        actx = {"run_id": f"{src.get('reference_id')}-{started:%Y%m%d%H%M%S}",
+                "reference": src.get("reference_id") or "",
+                "application_id": source_application_id,
+                "applicant_id": (src.get("applicant") or {}).get("id")
+                if isinstance(src.get("applicant"), dict) else src.get("applicant"),
+                "reason_code": (reason_code or "").strip(),
+                "approved_by": approved_by.strip(),
+                "applicant_confirmation": (applicant_confirmation or "").strip()}
+        if dry_run:
+            return {"status": "dry_run", "message": "Would archive the source application.",
+                    "source_reference_id": src.get("reference_id")}
+        return archive_source_application(api, source_application_id, target_application_id,
+                                          actx, ChangeLog())
     if mode != "transfer":
-        return {"status": "error", "message": "mode must be 'transfer' or "
-                                              "'test_eligibility_update'."}
+        return {"status": "error", "message": "mode must be 'transfer', 'archive_source' "
+                                              "or 'test_eligibility_update'."}
     if not source_application_id:
         return {"status": "error", "message": "Pass source_application_id."}
 
@@ -1582,6 +1810,13 @@ def main(
     # ---- source tasks
     src_tasks = fetch_all_tasks(api, source_application_id)
     report["source_task_count"] = len(src_tasks)
+    payment = source_payment_status(src_app, src_tasks)
+    report["source_payment"] = payment
+    if payment["paid"] == "invoiced":
+        warnings.append("Source is invoiced but has no completed payment; payment date "
+                        "not carried over. Decide manually whether to hide payment.")
+    elif payment["paid"] is True and not payment["payment_date"]:
+        warnings.append("Source is paid but no payment date could be found to carry over.")
 
     if dry_run:
         ref_id = reference_target_application_id or pick_reference_application(
@@ -1612,9 +1847,31 @@ def main(
                     f"{tgt_stream.upper()} application(s): "
                     f"{[a['reference_id'] for a in existing['found']]}. "
                     f"Creating another anyway.")
+            # Custom fields are site-wide, so their ids can be read from the
+            # source application. Setting them in the create request lets the
+            # target's "Application has been created" automations see them.
+            src_cf_ids = {cf.get("name"): cf.get("id") for cf in (src_app.get("custom_fields") or [])
+                          if isinstance(cf, dict)}
+            create_cf: List[Dict[str, Any]] = []
+            if record_transfer_source:
+                if src_cf_ids.get(TRANSFER_SOURCE_FIELD):
+                    create_cf.append({"id": src_cf_ids[TRANSFER_SOURCE_FIELD],
+                                      "value": src_app.get("reference_id") or str(source_application_id)})
+                else:
+                    warnings.append(f"Custom field '{TRANSFER_SOURCE_FIELD}' not found, so the "
+                                    f"Transfer - Paid / Unpaid label automations cannot tell "
+                                    f"this is a transfer. Create it (target: application) first.")
+            if payment["paid"] is True and carry_payment_date and payment["payment_date"]:
+                if src_cf_ids.get(PAYMENT_DATE_FIELD):
+                    create_cf.append({"id": src_cf_ids[PAYMENT_DATE_FIELD],
+                                      "value": payment["payment_date"]})
+            create_cf = create_cf or None
             creation = create_application(
                 api, tgt_program_id, applicant_id,
-                title=src_app.get("title"), override=create_payload_override)
+                title=src_app.get("title"), override=create_payload_override,
+                custom_fields=create_cf, automations=fire_create_automations)
+            report["create_custom_fields"] = create_cf
+            report["create_automations_fired"] = fire_create_automations
             report["creation"] = creation
             if not creation.get("created"):
                 msg = creation.get("reason") or "SMApply rejected the create."
@@ -1632,12 +1889,14 @@ def main(
                 return {"status": "create_failed", "message": msg, "report": report}
             new_app_id = creation["application_id"]
             report["mode"] = "created_new_application"
-            if applied:
-                err = _safe_log(log, log_rows("transfer_created", ctx, applied["resolved"],
-                                              new_app_id=new_app_id))
-                if err:
-                    warnings.append(f"Transfer succeeded but the change log could not "
-                                    f"record it: {err}")
+            err = _safe_log(log, log_rows(
+                "transfer_created", ctx, applied["resolved"] if applied else None,
+                new_app_id=new_app_id,
+                notes=(f"target {creation.get('reference_id')}; source paid: "
+                       f"{payment['paid']} ({payment['basis']})")))
+            if err:
+                warnings.append(f"Transfer succeeded but the change log could not "
+                                f"record it: {err}")
 
         report["new_application_id"] = new_app_id
         tgt_tasks = fetch_all_tasks(api, new_app_id)
@@ -1691,12 +1950,6 @@ def main(
             manual_followup.append({"task": p["name"], "reason": "option missing in target",
                                     "label": ic["label"],
                                     "source_answer": ic["source_choice"] or ic["indices"]})
-        for ot in p.get("other_text_not_copied") or []:
-            warnings.append(
-                f"{p['name']}: '{ot['label'][:60]}' had 'Other' text, which the API "
-                f"cannot write; the option was copied but the text must be re-entered.")
-            manual_followup.append({"task": p["name"], "reason": "'Other' text not copied",
-                                    "label": ot["label"]})
         for sf in p["signature_fields"]:
             warnings.append(
                 f"{p['name']}: '{sf['label'][:60]}' is a signature/file field; not "
@@ -1728,6 +1981,9 @@ def main(
     }
 
     if dry_run:
+        report["planned_transfer_label"] = (
+            "Transfer - Paid" if payment["paid"] is True else
+            "Transfer - Unpaid" if payment["paid"] is False else "none (invoiced)")
         report["warnings"] = warnings
         report["sample_payload_keys"] = {p["name"]: list(p["payload"])[:5] for p in plans[:3]}
         report["elapsed_s"] = round(
@@ -1745,6 +2001,13 @@ def main(
         if not entry["data"].get("ok", True):
             warnings.append(f"{p['name']}: data PATCH returned "
                             f"HTTP {entry['data'].get('status')}; task not written.")
+        for r in entry["data"].get("repaired") or []:
+            if r.get("other_text_lost"):
+                warnings.append(f"{p['name']}: '{r['question']}' had 'Other' text that "
+                                f"SMApply would not accept; the option was copied but "
+                                f"the text must be re-entered.")
+                manual_followup.append({"task": p["name"], "reason": "'Other' text not copied",
+                                        "label": r["question"]})
         for d in entry["data"].get("dropped") or []:
             warnings.append(f"{p['name']}: field {d['key']} rejected by SMApply "
                             f"({d['error']}); left blank for manual entry.")
@@ -1767,6 +2030,48 @@ def main(
             entry["complete"] = complete_task(api, new_app_id, p["target_task_id"],
                                               fire_automations)
         results.append(entry)
+
+    # ---- payment carry-over (paid sources only)
+    if payment["paid"] is True:
+        pay_out: Dict[str, Any] = {}
+        if carry_payment_date and payment["payment_date"]:
+            current = str(_custom_values(fetch_application(api, new_app_id))
+                          .get(PAYMENT_DATE_FIELD) or "")
+            if current == str(payment["payment_date"]):
+                pay_out["payment_date"] = {"ok": True, "set_at": "creation"}
+            else:
+                pay_out["payment_date"] = set_application_custom_field(
+                    api, new_app_id, PAYMENT_DATE_FIELD, payment["payment_date"])
+                pay_out["payment_date"]["set_at"] = "after creation"
+                warnings.append("Payment date was not set at creation, so the "
+                                "'Application has been created' automation will not "
+                                "have hidden the payment tasks. Hide them manually.")
+                if not pay_out["payment_date"].get("ok"):
+                    warnings.append(f"Payment date could not be set on the new application: "
+                                    f"{pay_out['payment_date']}")
+        if mark_paid_payment_tasks_complete:
+            pay_out["payment_tasks"] = complete_payment_tasks(api, new_app_id, tgt_tasks)
+            for t in pay_out["payment_tasks"]:
+                if not t.get("ok"):
+                    warnings.append(f"Payment task '{t['task']}' could not be marked "
+                                    f"complete (HTTP {t.get('status')}).")
+        report["payment_carry_over"] = pay_out
+
+    # ---- Transfer - Paid / Transfer - Unpaid label
+    if apply_transfer_label:
+        label_id = (paid_label_id or TRANSFER_PAID_LABEL_ID) if payment["paid"] is True else \
+            (unpaid_label_id or TRANSFER_UNPAID_LABEL_ID) if payment["paid"] is False else 0
+        if payment["paid"] == "invoiced":
+            warnings.append("Source is invoiced only; no transfer label applied.")
+        elif not label_id:
+            warnings.append("Transfer label id not configured; set TRANSFER_PAID_LABEL_ID "
+                            "and TRANSFER_UNPAID_LABEL_ID.")
+        else:
+            report["transfer_label"] = {"label_id": label_id,
+                                        **assign_label(api, new_app_id, label_id)}
+            if not report["transfer_label"].get("ok"):
+                warnings.append(f"Transfer label could not be applied: "
+                                f"{report['transfer_label']}")
 
     report["results"] = results
     report["warnings"] = warnings

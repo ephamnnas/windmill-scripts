@@ -16,11 +16,19 @@ schema:
       description: ''
       default: ''
       originalType: string
+    apply_transfer_label:
+      type: boolean
+      description: ''
+      default: true
     approved_by:
       type: string
       description: ''
       default: ''
       originalType: string
+    carry_payment_date:
+      type: boolean
+      description: ''
+      default: true
     copy_files:
       type: boolean
       description: ''
@@ -54,7 +62,15 @@ schema:
       type: boolean
       description: ''
       default: false
+    fire_create_automations:
+      type: boolean
+      description: ''
+      default: true
     include_empty_fields:
+      type: boolean
+      description: ''
+      default: false
+    mark_paid_payment_tasks_complete:
       type: boolean
       description: ''
       default: false
@@ -78,11 +94,19 @@ schema:
       items:
         type: string
       originalType: string[]
+    paid_label_id:
+      type: integer
+      description: ''
+      default: 0
     reason_code:
       type: string
       description: ''
       default: partner_contract_termination
       originalType: string
+    record_transfer_source:
+      type: boolean
+      description: ''
+      default: true
     reference_target_application_id:
       type: integer
       description: ''
@@ -113,6 +137,10 @@ schema:
       description: ''
       default: true
     test_user_id:
+      type: integer
+      description: ''
+      default: 0
+    unpaid_label_id:
       type: integer
       description: ''
       default: 0

@@ -32,13 +32,18 @@ import wmill
 
 # --- Roles (lowercase emails) ------------------------------------------
 REQUESTERS = {"thobbs@nnas.ca", "aonikan@nnas.ca", "cbond@nnas.ca"}
-APPROVERS = {"tparsons@nnas.ca"}
-PROCESSORS = {"tparsons@nnas.ca"}  # issues the refund in Stripe, presses Lock
+APPROVERS = {"thobbs@nnas.ca"}  # Tavia approves
+PROCESSORS = {"tparsons@nnas.ca"}  # Tracy refunds in Stripe, then issues (locks)
 ADMINS = {"knguyen@nnas.ca"}  # sees everything, can request and process
 ADMINS_CAN_APPROVE = False
 REQUESTERS_SEE_ALL = True  # False = requesters only see their own requests
 
-# Whoever saves and deploys the two Windmill apps. See SETUP step 7.
+# Tavia both raises and approves refunds. True lets an approver approve a
+# request they raised themselves. The second person is then the processor:
+# whoever requested or approved a refund can never be the one who issues it.
+ALLOW_SELF_APPROVAL = True
+
+# Whoever deploys the refund app (it runs as this user). See SETUP step 6.
 APP_PUBLISHER_EMAIL = "knguyen@nnas.ca"
 
 # --- Testing ------------------------------------------------------------
@@ -91,6 +96,16 @@ SP_SITE = "/sites/NNAS-Portal-Sharepoint"
 SP_LIBRARY = "Applications"
 SP_FOLDER = "zDATA/refund_register"
 
+# --- Email alerts (Microsoft Graph sendMail) ----------------------------
+# Sent on: new request (to approvers), approval (to processors), rejection
+# (to requester), refund issued and application locked (to approver and
+# requester). Needs the Mail.Send application permission on the same Entra
+# app used for SharePoint, and a real mailbox to send from. Alerts never
+# block the workflow; a failed alert shows in the button result.
+NOTIFY_ENABLED = True
+NOTIFY_SENDER = ""  # e.g. "it@nnas.ca". Blank = alerts skipped, with a note.
+APP_URL = ""  # optional link to the deployed app, added to each email
+
 TIMEOUT = 60
 
 
@@ -101,10 +116,15 @@ TIMEOUT = 60
 
 def resolve_caller(ctx_email: str = "") -> str:
     """
-    WM_EMAIL is set by Windmill for every job. When an app runs a script it
-    may hold the app publisher rather than the person who clicked. If it does,
-    fall back to ctx.email, which each app passes in. SETUP step 7 checks
-    which one your Windmill version delivers.
+    Who is acting.
+
+    From the refund app: each backend runnable sets ctx_email as a context
+    field (ctx: email). Windmill fills it from the viewer's session on the
+    server, and the browser cannot set or override it. App runs execute as the
+    publisher, so WM_EMAIL is the publisher and ctx_email is the viewer.
+
+    Run directly in Windmill (only folder owners can): WM_EMAIL is whoever
+    started the run, and it wins.
     """
     wm = (os.environ.get("WM_EMAIL") or "").strip().lower()
     ctx = (ctx_email or "").strip().lower()
@@ -268,6 +288,45 @@ def smapply_snapshot(application_id) -> dict:
         "stage_id": stage.get("id"),
         "stage_title": stage.get("title"),
     }
+
+
+def resolve_application_id(identifier) -> int:
+    """
+    Accepts the SMApply application ID (digits) or the application number
+    (reference, e.g. NNAS-T-0000001234) and returns the application ID.
+
+    The list endpoint's filter names are not documented here, so several are
+    tried. A result is only accepted when its reference_id matches exactly, so
+    an ignored filter can never return the wrong application.
+    """
+    raw = str(identifier if identifier is not None else "").strip()
+    if not raw:
+        raise ValueError("Enter an application number or SMApply application ID.")
+    if raw.isdigit():
+        return int(raw)
+
+    for params in ({"reference_id": raw}, {"title": raw}, {"search": raw}, {"q": raw}):
+        try:
+            r = requests.get(
+                f"{SMAPPLY_BASE}/applications/",
+                headers=_sm_headers(),
+                params={**params, "per_page": 50},
+                timeout=TIMEOUT,
+            )
+        except Exception:
+            continue
+        if not (200 <= r.status_code < 300):
+            continue
+        body = _sm_body(r)
+        results = body.get("results") if isinstance(body, dict) else body
+        for app in results or []:
+            if isinstance(app, dict) and str(app.get("reference_id") or "").upper() == raw.upper():
+                return int(app["id"])
+
+    raise ValueError(
+        f"No application found with number {raw}. Check the number, or enter "
+        f"the SMApply application ID (digits) instead."
+    )
 
 
 def _patch_verify(application_id, step, payload, check, done):
@@ -600,6 +659,43 @@ def backup_register(event: str) -> str:
 
 
 # ======================================================================
+# Email alerts
+# ======================================================================
+
+
+def notify(to, subject: str, lines: list) -> str:
+    """Plain-text email through Graph. Never raises; returns what happened."""
+    if not NOTIFY_ENABLED:
+        return "alerts disabled"
+    recipients = sorted({str(e).strip().lower() for e in (to or []) if e})
+    if not recipients:
+        return "no recipients"
+    if not NOTIFY_SENDER:
+        return "ALERT SKIPPED: set NOTIFY_SENDER in f/refunds/common"
+    body = list(lines)
+    if APP_URL:
+        body += ["", f"Open NNAS Refunds: {APP_URL}"]
+    try:
+        _graph(
+            "POST",
+            f"/users/{NOTIFY_SENDER}/sendMail",
+            ok=(202,),
+            headers={"Content-Type": "application/json"},
+            json={
+                "message": {
+                    "subject": subject,
+                    "body": {"contentType": "Text", "content": "\n".join(body)},
+                    "toRecipients": [{"emailAddress": {"address": e}} for e in recipients],
+                },
+                "saveToSentItems": True,
+            },
+        )
+        return f"alert sent to {', '.join(recipients)}"
+    except Exception as exc:
+        return f"ALERT FAILED: {exc}"
+
+
+# ======================================================================
 # Entrypoint (configuration check only)
 # ======================================================================
 
@@ -611,6 +707,8 @@ def main():
         "processors": sorted(PROCESSORS),
         "admins": sorted(ADMINS),
         "admins_can_approve": ADMINS_CAN_APPROVE,
+        "allow_self_approval": ALLOW_SELF_APPROVAL,
+        "alerts": (NOTIFY_SENDER or "sender not set") if NOTIFY_ENABLED else "disabled",
         "requesters_see_all": REQUESTERS_SEE_ALL,
         "lock_allowlist": sorted(LOCK_ALLOWLIST) if LOCK_ALLOWLIST is not None else "OFF (production)",
         "test_solo": TEST_SOLO,

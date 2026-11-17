@@ -1,0 +1,25 @@
+summary: ''
+description: ''
+lock: '!inline f/refunds/find_payments.script.lock'
+kind: script
+schema:
+  $schema: https://json-schema.org/draft/2020-12/schema
+  type: object
+  properties:
+    application:
+      type: string
+      description: ''
+      default: null
+      originalType: string
+    ctx_email:
+      type: string
+      description: ''
+      default: ''
+      originalType: string
+    email:
+      type: string
+      description: ''
+      default: ''
+      originalType: string
+  required:
+    - application

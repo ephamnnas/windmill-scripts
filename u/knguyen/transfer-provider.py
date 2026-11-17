@@ -121,6 +121,10 @@ MAX_RETRIES = 3
 
 TASK_STATUS_COMPLETE = 3
 
+# Form-field names tried, in order, to tell the file upload endpoint which
+# question an attachment belongs to.
+FILE_QUESTION_FIELD_NAMES = ["question", "question_id", "key", "field"]
+
 # Task names never copied. Matched as lowercase substrings.
 EXCLUDE_SUBSTRINGS = [
     "payment",
@@ -545,6 +549,7 @@ def build_task_payload(src_task: Dict[str, Any], tgt_task: Dict[str, Any],
     skipped: List[Dict[str, Any]] = []
     invalid_choices: List[Dict[str, Any]] = []
     signature_fields: List[Dict[str, Any]] = []
+    target_defs: Dict[str, Any] = {}
     written = 0
 
     def target_field(tkey: str) -> Dict[str, Any]:
@@ -605,6 +610,7 @@ def build_task_payload(src_task: Dict[str, Any], tgt_task: Dict[str, Any],
             continue
 
         payload[tkey] = value
+        target_defs[tkey] = tf
         written += 1
 
     return {
@@ -619,6 +625,7 @@ def build_task_payload(src_task: Dict[str, Any], tgt_task: Dict[str, Any],
         "signature_fields": signature_fields,
         "ambiguous": fm["ambiguous"],
         "unmappable": fm["unmappable"],
+        "target_fields": target_defs,
     }
 
 
@@ -1169,6 +1176,18 @@ def find_existing_target_application(api: Api, program_id: int,
             "lookup_ok": bool(res.get("ok"))}
 
 
+def _app_summary(b: Any) -> Any:
+    """Application fields safe to keep in job output (no applicant details)."""
+    if not isinstance(b, dict):
+        return b
+    prog = b.get("program")
+    stage = b.get("current_stage")
+    return {"id": b.get("id"), "reference_id": b.get("reference_id"),
+            "program": prog.get("name") if isinstance(prog, dict) else prog,
+            "current_stage": stage.get("title") if isinstance(stage, dict) else stage,
+            "created_at": b.get("created_at")}
+
+
 def create_application(api: Api, program_id: int, applicant_id: int,
                        title: Optional[str] = None,
                        override: Optional[dict] = None) -> Dict[str, Any]:
@@ -1185,14 +1204,15 @@ def create_application(api: Api, program_id: int, applicant_id: int,
         body["title"] = title
 
     res = api.post("/api/applications/", json_body=body)
-    attempt = {"path": "/api/applications/", "payload": body,
-               "status": res["status"], "body": res.get("body")}
+    attempt = {"path": "/api/applications/", "payload": body, "status": res["status"],
+               "body": _app_summary(res.get("body")) if res["ok"] else res.get("body")}
 
     if res["ok"]:
         new_id = (res["body"] or {}).get("id")
         if new_id:
             return {"created": True, "application_id": new_id,
-                    "attempt": attempt, "response": res["body"]}
+                    "reference_id": (res["body"] or {}).get("reference_id"),
+                    "attempt": attempt}
         return {"created": False, "attempt": attempt,
                 "reason": "create returned 2xx but no application id"}
 
@@ -1218,14 +1238,72 @@ def create_application(api: Api, program_id: int, applicant_id: int,
 # writing
 # --------------------------------------------------------------------------
 
-def write_task_data(api: Api, app_id: int, task_id: int,
-                    payload: Dict[str, Any]) -> Dict[str, Any]:
+SINGLE_CHOICE_ERROR = "single-choice value must be an integer index"
+
+
+def coerce_single_choice(value: Any, target_field: Dict[str, Any]) -> Optional[int]:
+    """
+    A field can be multi-choice in one program and single-choice in the other,
+    so the source may hold [1] where the target wants 1, or a label where the
+    target wants its index. Returns the index, or None if it cannot be derived.
+    """
+    if isinstance(value, list):
+        if len(value) == 1 and _is_index(value[0]) and value[0] != CHOICE_UNANSWERED:
+            return value[0]
+        return None
+    if isinstance(value, str):
+        s = value.strip()
+        if s.isdigit():
+            return int(s)
+        for i, label in enumerate(choice_labels(target_field)):
+            if _norm(label) == _norm(s):
+                return i
+    return None
+
+
+def write_task_data(api: Api, app_id: int, task_id: int, payload: Dict[str, Any],
+                    target_fields: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """
+    PATCH the task's answers. SMApply rejects the WHOLE request if any one
+    field is invalid, so on a 400 that names fields, each named field is
+    repaired (single-choice shape) or left out, and the rest is sent again.
+    """
     if not payload:
         return {"skipped": "empty payload"}
-    res = api.patch(f"/api/applications/{app_id}/tasks/{task_id}/",
-                    json_body={"data": payload})
-    return {"status": res["status"], "ok": res["ok"],
-            "body": None if res["ok"] else res.get("body")}
+    payload = dict(payload)
+    repaired: List[Dict[str, Any]] = []
+    dropped: List[Dict[str, Any]] = []
+    res: Dict[str, Any] = {}
+    for _ in range(4):
+        res = api.patch(f"/api/applications/{app_id}/tasks/{task_id}/",
+                        json_body={"data": payload})
+        if res["ok"]:
+            out = {"status": res["status"], "ok": True, "body": None}
+            if repaired:
+                out["repaired"] = repaired
+            if dropped:
+                out["dropped"] = dropped
+            return out
+        body = res.get("body")
+        bad = {k: v for k, v in body.items() if k in payload} \
+            if res["status"] == 400 and isinstance(body, dict) else {}
+        if not bad:
+            break
+        for key, msg in bad.items():
+            fixed = None
+            if SINGLE_CHOICE_ERROR in str(msg):
+                fixed = coerce_single_choice(payload[key], (target_fields or {}).get(key, {}))
+            if fixed is not None:
+                repaired.append({"key": key, "from_type": type(payload[key]).__name__,
+                                 "to_index": fixed})
+                payload[key] = fixed
+            else:
+                dropped.append({"key": key, "error": str(msg)[:200]})
+                payload.pop(key)
+        if not payload:
+            break
+    return {"status": res.get("status"), "ok": False, "body": res.get("body"),
+            "repaired": repaired, "dropped": dropped}
 
 
 def complete_task(api: Api, app_id: int, task_id: int,
@@ -1256,14 +1334,19 @@ def copy_file(api: Api, src_url: str, filename: str, app_id: int, task_id: int,
                 "error": f"{len(blob)} bytes exceeds max_file_mb"}
 
     path = f"/api/applications/{app_id}/tasks/{task_id}/files/"
-    # Field-scoped uploads may need the field key; the association is
-    # undocumented, so try with it and fall back to a plain upload.
-    tries = []
+    # SMApply answers an upload without a recognised question reference with
+    # 400 "invalid question id". The form-field name is undocumented here, so
+    # the likely names are tried in turn; a rejected attempt stores nothing.
+    tries: List[Optional[Dict[str, Any]]] = []
     if target_key:
-        tries.append({"field": target_key})
+        base_key, _ = split_suffix(target_key)
+        for name in FILE_QUESTION_FIELD_NAMES:
+            tries.append({name: target_key})
+            if base_key != target_key:
+                tries.append({name: base_key})
     tries.append(None)
 
-    tries_err: Dict[str, Any] = {"filename": filename, "ok": False}
+    attempts: List[Dict[str, Any]] = []
     for extra in tries:
         res = api.post(path,
                        files={"file": (filename, io.BytesIO(blob),
@@ -1272,9 +1355,9 @@ def copy_file(api: Api, src_url: str, filename: str, app_id: int, task_id: int,
         if res["ok"]:
             return {"filename": filename, "ok": True, "bytes": len(blob),
                     "form_data": extra, "response": res.get("body")}
-        tries_err = {"filename": filename, "ok": False, "status": res["status"],
-                     "form_data": extra, "body": res.get("body")}
-    return tries_err
+        attempts.append({"form_data": extra, "status": res["status"],
+                         "body": res.get("body")})
+    return {"filename": filename, "ok": False, "attempts": attempts}
 
 
 # --------------------------------------------------------------------------
@@ -1297,6 +1380,7 @@ def main(
     create_payload_override: Optional[dict] = None,
     max_file_mb: int = 50,
     extra_exclude_task_names: Optional[List[str]] = None,
+    only_task_names: Optional[List[str]] = None,
     eligibility_changes: Optional[dict] = None,
     approved_by: str = "",
     applicant_confirmation: str = "",
@@ -1331,6 +1415,9 @@ def main(
                             program to read its field keys. Left at 0, one is
                             picked automatically.
     create_payload_override Exact POST body for the create, if ever needed.
+    only_task_names         Copy only these tasks (exact names), e.g. to finish
+                            tasks that failed, with target_application_id set
+                            to the application already created.
     eligibility_changes     Only when the applicant does not meet the target
                             criteria and has CONFIRMED different answers,
                             e.g. {"ofac": "No"}. Keys: eligibility_to_apply,
@@ -1367,6 +1454,7 @@ def main(
                 "message": "ambiguous_field_policy must be 'skip' or 'positional'."}
 
     exclude_extra = [norm_task_name(n) for n in (extra_exclude_task_names or [])]
+    only = {norm_task_name(n) for n in (only_task_names or [])}
 
     def excluded(name: Any) -> bool:
         n = norm_task_name(name)
@@ -1514,6 +1602,8 @@ def main(
     for sname, stask in src_tasks.items():
         if excluded(stask.get("name")):
             continue
+        if only and norm_task_name(stask.get("name")) not in only:
+            continue
         tname = sname if sname in tgt_tasks else TASK_NAME_ALIASES.get(sname, "")
         ttask = tgt_tasks.get(tname) if tname else None
         if ttask is None:
@@ -1595,10 +1685,16 @@ def main(
 
     for p in plans:
         entry = {"name": p["name"], "target_task_id": p["target_task_id"]}
-        entry["data"] = write_task_data(api, new_app_id, p["target_task_id"], p["payload"])
+        entry["data"] = write_task_data(api, new_app_id, p["target_task_id"], p["payload"],
+                                        p.get("target_fields"))
         if not entry["data"].get("ok", True):
             warnings.append(f"{p['name']}: data PATCH returned "
-                            f"HTTP {entry['data'].get('status')}.")
+                            f"HTTP {entry['data'].get('status')}; task not written.")
+        for d in entry["data"].get("dropped") or []:
+            warnings.append(f"{p['name']}: field {d['key']} rejected by SMApply "
+                            f"({d['error']}); left blank for manual entry.")
+            manual_followup.append({"task": p["name"], "reason": "field rejected by SMApply",
+                                    "key": d["key"]})
 
         if copy_files and p["files"]:
             entry["files"] = []

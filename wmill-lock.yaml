@@ -94,7 +94,7 @@ locks:
   u/knguyen/review-assignment-tm: ab41a2404eec38511af099058aacfe463781a0ace30c7e5a642bf245d1da514f
   u/knguyen/smapply-pg-sync: 856ad58742c6b59429bed0ad63afa71d2b846bc5589253beb5828df42933f45e
   u/knguyen/TM-SFTP-Daily-Mirror: ad17237f041bf21c82f9a5a6ddfac7cc384546a9bd51d19a240b04f5d2a8e364
-  u/knguyen/transfer-provider: a6be3f367ac9b068ed3c41844446a20d6ad58af510ae28617a844ba66bcae3eb
+  u/knguyen/transfer-provider: 3389ba77366be13dd916133691d2e066f3457418c00eb2e8cbedb4c310f33a2c
   u/knguyen/translation-bill__flow+__flow_hash: 44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a
   u/knguyen/update-payment-or-submission: 208901250956b69f51b77ec73539314e6510ec959396d727c4b200a2148cff8d
   u/knguyen/worker_checkscript: 40a6dcdbec6e95043cb6abd6553514022b35afca63bc85f80bc53ac660fec1e5

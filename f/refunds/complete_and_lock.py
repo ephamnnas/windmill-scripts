@@ -6,14 +6,15 @@
 """
 Windmill path: f/refunds/complete_and_lock
 
-The "Lock application" button. Run after the refund was issued manually in
-Stripe.
+The "Issue refund" button, used by the processor after the refund was made
+manually in Stripe.
 
   1. Verifies the Stripe refund (re_ id): right charge, succeeded, exact
      approved amount, same currency. Records it, so the refund is on record
      even if step 2 fails.
   2. Moves the SMApply application to Application Stage, sets Refunded -
      Locked, and locks it. Marks the request closed.
+  3. Emails the approver and the requester that the refund was issued.
 
 If step 2 fails, the request stays 'refunded' with the error saved. Fix the
 cause and press the button again with the refund id blank; the refund is not
@@ -24,6 +25,8 @@ from f.refunds.common import (
     backup_register,
     is_unique_violation,
     lock_application,
+    money,
+    notify,
     q_one,
     require,
     resolve_caller,
@@ -46,8 +49,10 @@ def main(request_id: int, stripe_refund_id: str = "", ctx_email: str = ""):
     solo = solo_test_allowed(who, row["application_id"], row["stripe_mode"])
     if not roles_of(who)["can_process"] and not solo:
         require(who, "can_process")
-    if row["requested_by"] == who and not solo:
-        raise PermissionError("You cannot process your own request.")
+    if who in (row["requested_by"], row["decided_by"]) and not solo:
+        raise PermissionError(
+            "You requested or approved this refund, so someone else must issue it."
+        )
 
     ref = row["ref"]
     steps = []
@@ -127,9 +132,23 @@ def main(request_id: int, stripe_refund_id: str = "", ctx_email: str = ""):
     if not closed:
         raise RuntimeError(f"{ref} was locked in SMApply but its status changed meanwhile. Check the register.")
 
+    amount = money(row["requested_amount_cents"], row["currency"])
+    alert = notify(
+        [row["decided_by"], row["requested_by"]],
+        f"Refund {ref} issued: {row['reference_id']}",
+        [
+            f"{ref} has been refunded and closed by {who}.",
+            f"Application: {row['reference_id']}",
+            f"Amount refunded: {amount}",
+            f"Stripe refund: {row['stripe_refund_id'] or rid}",
+            "The application is now locked at Refunded - Locked in SMApply.",
+        ],
+    )
+
     return {
-        "result": f"{ref} closed. Application {row['application_id']} is locked at Refunded - Locked.",
+        "result": f"{ref} refund issued. Application {row['reference_id']} is locked at Refunded - Locked.",
         "steps": steps + ["locked"],
         "smapply": result["after"],
         "backup": backup_register("closed"),
+        "alert": alert,
     }

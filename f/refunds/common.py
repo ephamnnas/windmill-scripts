@@ -85,6 +85,13 @@ REASONS = [
     "Other",
 ]
 MIN_DETAILS_CHARS = 15
+
+# --- Payment lookup by email -------------------------------------------
+# Requesters do not have Stripe ids. Payments are found from the payer's
+# email: first through Stripe customers with that email, and if none are
+# found, by scanning charges made since the application was created and
+# matching the email on each payment. The scan stops after this many charges.
+MAX_CHARGE_SCAN = 3000
 OPEN_STATUSES = ["pending_approval", "approved", "refunded"]
 CLOSED_STATUSES = ["rejected", "closed"]
 
@@ -259,9 +266,7 @@ def _sm_body(resp):
         return {"text": (resp.text or "")[:400]}
 
 
-def smapply_snapshot(application_id) -> dict:
-    """Application info only. Never returns applicant name or email."""
-    application_id = int(application_id)
+def _smapply_get(application_id: int) -> dict:
     r = requests.get(
         f"{SMAPPLY_BASE}/applications/{application_id}/",
         headers=_sm_headers(),
@@ -274,7 +279,10 @@ def smapply_snapshot(application_id) -> dict:
             f"SMApply GET {application_id} failed: HTTP {r.status_code} "
             f"{json.dumps(_sm_body(r), default=str)[:300]}"
         )
-    app = r.json()
+    return r.json()
+
+
+def _snapshot_of(app: dict, application_id: int) -> dict:
     status = app.get("status") if isinstance(app.get("status"), dict) else {}
     stage = app.get("current_stage") if isinstance(app.get("current_stage"), dict) else {}
     program = app.get("program") if isinstance(app.get("program"), dict) else {}
@@ -288,6 +296,27 @@ def smapply_snapshot(application_id) -> dict:
         "stage_id": stage.get("id"),
         "stage_title": stage.get("title"),
     }
+
+
+def smapply_snapshot(application_id) -> dict:
+    """Application info only. Never returns applicant name or email."""
+    application_id = int(application_id)
+    return _snapshot_of(_smapply_get(application_id), application_id)
+
+
+def smapply_application(application_id) -> tuple:
+    """
+    (snapshot, applicant_email, created_at) for payment lookup.
+
+    The email is used to find the payment in Stripe and to confirm a chosen
+    payment belongs to this applicant. It is never stored in the register,
+    written to the CSV backup, or returned to the page unmasked.
+    """
+    application_id = int(application_id)
+    app = _smapply_get(application_id)
+    owner = app.get("applicant") if isinstance(app.get("applicant"), dict) else {}
+    email = str(owner.get("email") or "").strip().lower()
+    return _snapshot_of(app, application_id), email, app.get("created_at")
 
 
 def resolve_application_id(identifier) -> int:
@@ -455,10 +484,131 @@ def _invoice_payment_intent(invoice_id: str):
     return pi, _meta(inv).get("nnas_application_id")
 
 
+EMAIL_RE = re.compile(r"^[^@\s'\"\\]+@[^@\s'\"\\]+\.[^@\s'\"\\]+$")
+
+
+def clean_email(value) -> str:
+    """Lowercased email, '' if blank. Raises on anything that is not an email."""
+    e = str(value or "").strip().lower()
+    if not e:
+        return ""
+    if not EMAIL_RE.match(e):
+        raise ValueError("That does not look like an email address.")
+    return e
+
+
+def mask_email(email: str) -> str:
+    """j***@example.com, for showing which email was used without exposing it."""
+    if not email or "@" not in email:
+        return ""
+    name, domain = email.split("@", 1)
+    return f"{name[:1]}***@{domain}"
+
+
+def _charge_emails(charge, with_customer: bool = True) -> set:
+    """Every email Stripe holds for a charge: billing, receipt, and customer."""
+    emails = set()
+    billing = getattr(charge, "billing_details", None)
+    for value in (getattr(billing, "email", None), getattr(charge, "receipt_email", None)):
+        if value:
+            emails.add(str(value).strip().lower())
+    cust = getattr(charge, "customer", None)
+    if with_customer and cust:
+        try:
+            c = cust if not isinstance(cust, str) else stripe.Customer.retrieve(cust)
+            if getattr(c, "email", None):
+                emails.add(str(c.email).strip().lower())
+        except Exception:
+            pass
+    return emails
+
+
+def _charge_summary(charge, matched_by: str) -> dict:
+    amount = int(getattr(charge, "amount", 0) or 0)
+    refunded = int(getattr(charge, "amount_refunded", 0) or 0)
+    currency = (getattr(charge, "currency", "") or "").lower()
+    return {
+        "payment_id": charge.id,
+        "paid_on": _ts(getattr(charge, "created", None)),
+        "amount": money(amount, currency),
+        "refunded": money(refunded, currency),
+        "refundable": money(amount - refunded, currency),
+        "refundable_cents": amount - refunded,
+        "currency": currency,
+        "description": (getattr(charge, "description", None) or "")[:120],
+        "matched_by": matched_by,
+    }
+
+
+def _iso_to_epoch(iso):
+    try:
+        d = datetime.fromisoformat(str(iso).replace("Z", "+00:00"))
+        if d.tzinfo is None:
+            d = d.replace(tzinfo=timezone.utc)
+        return int(d.timestamp())
+    except Exception:
+        return None
+
+
+def find_charges_by_email(email: str, scan_since_iso=None) -> tuple:
+    """
+    Successful Stripe payments for a payer email. Returns (payments, stats).
+
+    1. Stripe customers with this email, then every charge on them.
+    2. Only if that finds nothing: scan charges created since scan_since_iso
+       (the application's creation date) and match the billing or receipt
+       email on each. Covers payments made without a Stripe customer.
+    """
+    email = clean_email(email)
+    if not email:
+        raise ValueError("An email is needed to look up payments.")
+
+    customers = {}
+    try:
+        for c in stripe.Customer.list(email=email, limit=100).auto_paging_iter():
+            customers[c.id] = c
+    except Exception as exc:
+        print(f"WARN: customer list failed ({exc})")
+    try:
+        found = stripe.Customer.search(query=f"email:'{email}'", limit=100)
+        for c in getattr(found, "data", None) or []:
+            customers[c.id] = c
+    except Exception as exc:
+        print(f"NOTE: customer search unavailable ({exc})")
+
+    charges = {}
+    for cid in customers:
+        for ch in stripe.Charge.list(customer=cid, limit=100).auto_paging_iter():
+            charges[ch.id] = (ch, "customer email")
+
+    scanned, capped = 0, False
+    if not charges:
+        since = _iso_to_epoch(scan_since_iso)
+        params = {"limit": 100}
+        if since:
+            params["created"] = {"gte": since - 86400}
+        for ch in stripe.Charge.list(**params).auto_paging_iter():
+            scanned += 1
+            if scanned > MAX_CHARGE_SCAN:
+                capped = True
+                break
+            if email in _charge_emails(ch, with_customer=False):
+                charges[ch.id] = (ch, "payment email")
+
+    rows = [
+        _charge_summary(ch, how)
+        for ch, how in charges.values()
+        if getattr(ch, "status", None) == "succeeded" and getattr(ch, "paid", False)
+    ]
+    rows.sort(key=lambda x: x["paid_on"] or "", reverse=True)
+    return rows, {"customers": len(customers), "scanned": scanned, "scan_capped": capped}
+
+
 def resolve_charge(reference: str) -> dict:
     """
     Accepts a payment intent (pi_), charge (ch_ or py_) or invoice (in_) id and
-    returns the paid charge. No customer details are returned.
+    returns the paid charge. Requesters never type these; the id comes from the
+    list built by find_charges_by_email.
     """
     ref = (reference or "").strip()
     invoice_app_id = None
@@ -499,6 +649,9 @@ def resolve_charge(reference: str) -> dict:
         "created_at": _ts(getattr(charge, "created", None)),
         "livemode": bool(getattr(charge, "livemode", False)),
         "invoice_application_id": invoice_app_id,
+        # Internal only: used to confirm the payment belongs to the payer.
+        # Never store this or return it to the page.
+        "payer_emails": _charge_emails(charge),
     }
 
 

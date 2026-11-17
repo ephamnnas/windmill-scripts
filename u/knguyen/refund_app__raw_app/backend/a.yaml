@@ -1,0 +1,6 @@
+type: script
+name: whoami
+fields:
+  ctx_email:
+    ctx: email
+path: f/refunds/whoami

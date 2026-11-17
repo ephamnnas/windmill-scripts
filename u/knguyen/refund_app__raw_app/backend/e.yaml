@@ -1,0 +1,6 @@
+type: script
+name: f/refunds/complete_and_lock
+fields:
+  ctx_email:
+    ctx: email
+path: f/refunds/complete_and_lock

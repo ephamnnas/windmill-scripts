@@ -1,0 +1,6 @@
+type: script
+name: f/refunds/create_request
+fields:
+  ctx_email:
+    ctx: email
+path: f/refunds/create_request

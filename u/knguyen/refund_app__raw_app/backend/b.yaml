@@ -1,0 +1,6 @@
+type: script
+name: f/refunds/list_requests
+fields:
+  ctx_email:
+    ctx: email
+path: f/refunds/list_requests

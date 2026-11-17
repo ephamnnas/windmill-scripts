@@ -1,0 +1,31 @@
+summary: ''
+description: ''
+lock: '!inline u/epham2/ces-transfer-candidates.script.lock'
+kind: script
+schema:
+  $schema: https://json-schema.org/draft/2020-12/schema
+  type: object
+  properties:
+    include_out_of_scope:
+      type: boolean
+      description: ''
+      default: false
+    limit:
+      type: integer
+      description: ''
+      default: 0
+    max_workers:
+      type: integer
+      description: ''
+      default: 4
+    paid_after_date:
+      type: string
+      description: ''
+      default: 2026-11-13
+      originalType: string
+    program_id:
+      type: integer
+      description: ''
+      default: null
+  required:
+    - program_id

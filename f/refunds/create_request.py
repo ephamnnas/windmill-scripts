@@ -10,11 +10,15 @@ Creates a refund request after checking the SMApply application and the
 original Stripe payment. Run with dry_run=True first (the app's Check button)
 to see what will be saved.
 
+application: the application number (e.g. NNAS-T-0000001234) or the SMApply
+application ID (digits).
+
 Full refund: leave refund_amount blank. The amount is taken from Stripe
 (original amount minus anything already refunded).
 """
 
 from f.refunds.common import (
+    APPROVERS,
     CURRENCIES,
     LOCKED_STATE,
     MIN_DETAILS_CHARS,
@@ -23,8 +27,10 @@ from f.refunds.common import (
     backup_register,
     is_unique_violation,
     money,
+    notify,
     q_one,
     require,
+    resolve_application_id,
     resolve_caller,
     resolve_charge,
     smapply_snapshot,
@@ -34,7 +40,7 @@ from f.refunds.common import (
 
 
 def main(
-    application_id: int,
+    application: str,
     stripe_reference: str,
     refund_type: str = "full",
     refund_amount: str = "",
@@ -58,7 +64,7 @@ def main(
             f"Do not include card or banking details."
         )
 
-    app = smapply_snapshot(application_id)
+    app = smapply_snapshot(resolve_application_id(application))
     warnings = []
     if app["state"] == LOCKED_STATE:
         warnings.append("This application is already locked in SMApply.")
@@ -180,4 +186,14 @@ def main(
     preview["result"] = f"{row['ref']} submitted for approval."
     preview["ref"] = row["ref"]
     preview["backup"] = backup_register("requested")
+    preview["alert"] = notify(
+        APPROVERS - {who},
+        f"Refund {row['ref']} needs approval: {app['reference_id']}",
+        [
+            f"{row['ref']} was requested by {who}.",
+            f"Application: {app['reference_id']}",
+            f"Amount: {money(cents, ch['currency'])} ({refund_type})",
+            f"Reason: {reason}",
+        ],
+    )
     return preview

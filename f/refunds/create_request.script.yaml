@@ -6,10 +6,11 @@ schema:
   $schema: https://json-schema.org/draft/2020-12/schema
   type: object
   properties:
-    application_id:
-      type: integer
+    application:
+      type: string
       description: ''
       default: null
+      originalType: string
     ctx_email:
       type: string
       description: ''
@@ -45,5 +46,5 @@ schema:
       default: null
       originalType: string
   required:
-    - application_id
+    - application
     - stripe_reference

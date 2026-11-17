@@ -2,6 +2,7 @@ version: v2
 locks:
   f/refunds/common: 5746e007c183b73b911a426faaf99b9303a911c19685b6524af98ba055d4e7d1
   f/refunds/create_request: d919fa8a811923f09880f2a8eb2a70c793f0ba07234a006a262e6550fe127f6c
+  f/refunds/decide_request: 4154e0c5ca9445458f05425954b28d757872d2ae9892f51d458f8311be5095e5
   f/refunds/list_requests: d3f25e6ec559a0f65c74931e3065593fb55e6404130c0dd201c5b8a6be37c85e
   f/refunds/whoami: 478426e40c6788b931edecfb030d615f35dbfa190ddb5c85867b8b10a3c81769
   u/epham2/amend-index-csv: 85c923ae71d84129ec8fc5c0b9d0d4d3fe0b9aee663610649ebe0c1268230eaa

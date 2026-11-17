@@ -1,0 +1,30 @@
+summary: ''
+description: ''
+lock: '!inline f/refunds/decide_request.script.lock'
+kind: script
+schema:
+  $schema: https://json-schema.org/draft/2020-12/schema
+  type: object
+  properties:
+    comment:
+      type: string
+      description: ''
+      default: ''
+      originalType: string
+    ctx_email:
+      type: string
+      description: ''
+      default: ''
+      originalType: string
+    decision:
+      type: string
+      description: ''
+      default: null
+      originalType: string
+    request_id:
+      type: integer
+      description: ''
+      default: null
+  required:
+    - request_id
+    - decision

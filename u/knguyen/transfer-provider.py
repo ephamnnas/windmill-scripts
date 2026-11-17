@@ -558,6 +558,7 @@ def build_task_payload(src_task: Dict[str, Any], tgt_task: Dict[str, Any],
     invalid_choices: List[Dict[str, Any]] = []
     signature_fields: List[Dict[str, Any]] = []
     target_defs: Dict[str, Any] = {}
+    other_text: List[Dict[str, Any]] = []
     written = 0
 
     def target_field(tkey: str) -> Dict[str, Any]:
@@ -585,6 +586,20 @@ def build_task_payload(src_task: Dict[str, Any], tgt_task: Dict[str, Any],
             continue
 
         tf = target_field(tkey)
+
+        # --- choice questions with an "Other, please specify" option are read
+        # as {"value": <index>, "other": <text>} but must be written as the
+        # bare index. Unanswered ones (index -1, no text) are skipped.
+        if isinstance(value, dict) and "value" in value and tf.get("choices"):
+            idx = value.get("value")
+            other = str(value.get("other") or "").strip()
+            if (idx is None or idx == CHOICE_UNANSWERED) and not other:
+                continue
+            if _is_index(idx):
+                if other:
+                    other_text.append({"key": skey, "target_key": tkey,
+                                       "label": clean_label(tf.get("name"))[:70]})
+                value = idx
 
         # --- file-typed fields holding a media path (e.g. the T&C signature).
         # Writing the path as text would point the new application at the old
@@ -635,6 +650,7 @@ def build_task_payload(src_task: Dict[str, Any], tgt_task: Dict[str, Any],
         "ambiguous": fm["ambiguous"],
         "unmappable": fm["unmappable"],
         "target_fields": target_defs,
+        "other_text_not_copied": other_text,
     }
 
 
@@ -1260,6 +1276,9 @@ def coerce_single_choice(value: Any, target_field: Dict[str, Any]) -> Optional[i
         if len(value) == 1 and _is_index(value[0]) and value[0] != CHOICE_UNANSWERED:
             return value[0]
         return None
+    if isinstance(value, dict) and _is_index(value.get("value")) \
+            and value.get("value") != CHOICE_UNANSWERED:
+        return value["value"]
     if isinstance(value, str):
         s = value.strip()
         if s.isdigit():
@@ -1678,6 +1697,12 @@ def main(
             manual_followup.append({"task": p["name"], "reason": "option missing in target",
                                     "label": ic["label"],
                                     "source_answer": ic["source_choice"] or ic["indices"]})
+        for ot in p.get("other_text_not_copied") or []:
+            warnings.append(
+                f"{p['name']}: '{ot['label'][:60]}' had 'Other' text, which the API "
+                f"cannot write; the option was copied but the text must be re-entered.")
+            manual_followup.append({"task": p["name"], "reason": "'Other' text not copied",
+                                    "label": ot["label"]})
         for sf in p["signature_fields"]:
             warnings.append(
                 f"{p['name']}: '{sf['label'][:60]}' is a signature/file field; not "
@@ -1753,7 +1778,10 @@ def main(
     report["warnings"] = warnings
     report["elapsed_s"] = round((datetime.now(timezone.utc) - started).total_seconds(), 1)
 
-    failures = [r for r in results if not r.get("data", {}).get("ok", True)]
+    failures = [r for r in results
+                if not r.get("data", {}).get("ok", True)
+                or r.get("data", {}).get("dropped")
+                or any(not f.get("ok") for f in r.get("files", []))]
     return {"status": "ok" if not failures else "partial",
             "new_application_id": new_app_id,
             "report": report}
